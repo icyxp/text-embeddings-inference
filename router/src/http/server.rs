@@ -345,20 +345,21 @@ async fn rerank(
         ErrorResponse::from(err)
     })?;
 
-    // Apply template if needed for Qwen3 rerankers
+    // Apply template if needed for rerankers
     let model_id = info.model_id.clone();
+    let model_path = info.model_path.clone();
     let use_template = req.use_template.unwrap_or_else(|| {
-        // Default to true for Qwen3 sequence classification models
-        text_embeddings_core::templates::requires_template(&model_id)
+        // Check for template using model path (which points to the actual filesystem location)
+        text_embeddings_core::templates::requires_template(&model_path)
     });
     
     // Closure for rerank
-    let rerank_inner = move |query: String, text: String, truncate: bool, instruction: Option<String>, model_id: String, infer: Infer| async move {
+    let rerank_inner = move |query: String, text: String, truncate: bool, instruction: Option<String>, model_id: String, model_path: String, infer: Infer| async move {
         let permit = infer.acquire_permit().await;
 
         // Apply template formatting if needed
         let input: text_embeddings_core::tokenization::EncodingInput = if use_template {
-            if let Some(formatter) = text_embeddings_core::templates::get_template_formatter(&model_id) {
+            if let Some(formatter) = text_embeddings_core::templates::get_template_formatter(&model_path) {
                 // Format as single string with template
                 let formatted = formatter.format_rerank(&query, &text, instruction.as_deref());
                 formatted.into()
@@ -428,6 +429,7 @@ async fn rerank(
                 truncate,
                 req.instruction.clone(),
                 model_id.clone(),
+                model_path.clone(),
                 local_infer.0,
             ))
         }

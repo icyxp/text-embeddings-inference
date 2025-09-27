@@ -282,6 +282,7 @@ pub async fn run(
     // Endpoint info
     let info = Info {
         model_id,
+        model_path: model_root.to_string_lossy().to_string(),
         model_sha: revision,
         model_dtype: dtype.to_string(),
         model_type,
@@ -492,6 +493,9 @@ pub struct Info {
     /// Model info
     #[cfg_attr(feature = "http", schema(example = "thenlper/gte-base"))]
     pub model_id: String,
+    /// Model path (directory containing model files)
+    #[cfg_attr(feature = "http", schema(example = "/path/to/model"))]
+    pub model_path: String,
     #[cfg_attr(
         feature = "http",
         schema(nullable = true, example = "fca14538aa9956a46526bd1d0d11d69e19b5a101")
