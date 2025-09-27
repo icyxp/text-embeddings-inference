@@ -346,7 +346,6 @@ async fn rerank(
     })?;
 
     // Apply template if needed for rerankers
-    let model_id = info.model_id.clone();
     let model_path = info.model_path.clone();
     let use_template = req.use_template.unwrap_or_else(|| {
         // Check for template using model path (which points to the actual filesystem location)
