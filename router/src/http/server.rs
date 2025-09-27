@@ -354,7 +354,7 @@ async fn rerank(
     });
     
     // Closure for rerank
-    let rerank_inner = move |query: String, text: String, truncate: bool, instruction: Option<String>, model_id: String, model_path: String, infer: Infer| async move {
+    let rerank_inner = move |query: String, text: String, truncate: bool, instruction: Option<String>, model_path: String, infer: Infer| async move {
         let permit = infer.acquire_permit().await;
 
         // Apply template formatting if needed
@@ -428,7 +428,6 @@ async fn rerank(
                 text.clone(),
                 truncate,
                 req.instruction.clone(),
-                model_id.clone(),
                 model_path.clone(),
                 local_infer.0,
             ))
