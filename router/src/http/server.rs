@@ -2,7 +2,8 @@
 use crate::http::types::{
     DecodeRequest, DecodeResponse, EmbedAllRequest, EmbedAllResponse, EmbedRequest, EmbedResponse,
     EmbedSparseRequest, EmbedSparseResponse, Embedding, EncodingFormat, Input, InputIds, InputType,
-    OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest, OpenAICompatResponse,
+    MultiModalEmbedRequest, MultiModalInput, MultiModalInputs, OpenAICompatEmbedding, 
+    OpenAICompatErrorResponse, OpenAICompatRequest, OpenAICompatResponse,
     OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse, Prediction, Rank,
     RerankRequest, RerankResponse, Sequence, SimilarityInput, SimilarityParameters,
     SimilarityRequest, SimilarityResponse, SimpleToken, SparseValue, TokenizeInput,
@@ -757,6 +758,227 @@ async fn embed(
     tracing::info!("Success");
 
     Ok((headers, Json(response)))
+}
+
+/// Get Multimodal Embeddings. Returns a 424 status code if the model is not a multimodal embedding model.
+#[utoipa::path(
+post,
+tag = "Text Embeddings Inference",
+path = "/embed_multimodal",
+request_body = MultiModalEmbedRequest,
+responses(
+(status = 200, description = "Multimodal Embeddings", body = EmbedResponse),
+(status = 424, description = "Embedding Error", body = ErrorResponse,
+example = json ! ({"error": "Inference failed", "error_type": "backend"})),
+(status = 429, description = "Model is overloaded", body = ErrorResponse,
+example = json ! ({"error": "Model is overloaded", "error_type": "overloaded"})),
+(status = 422, description = "Tokenization error", body = ErrorResponse,
+example = json ! ({"error": "Tokenization error", "error_type": "tokenizer"})),
+(status = 400, description = "Batch is empty", body = ErrorResponse,
+example = json ! ({"error": "Batch is empty", "error_type": "empty"})),
+(status = 413, description = "Batch size error", body = ErrorResponse,
+example = json ! ({"error": "Batch size error", "error_type": "validation"})),
+)
+)]
+#[instrument(
+    skip_all,
+    fields(total_time, tokenization_time, queue_time, inference_time,)
+)]
+async fn embed_multimodal(
+    infer: Extension<Infer>,
+    info: Extension<Info>,
+    Extension(context): Extension<Option<opentelemetry::Context>>,
+    Json(req): Json<MultiModalEmbedRequest>,
+) -> Result<(HeaderMap, Json<EmbedResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let span = tracing::Span::current();
+    if let Some(context) = context {
+        span.set_parent(context);
+    }
+
+    let start_time = Instant::now();
+
+    // Check if this is a multimodal model
+    match &info.model_type {
+        ModelType::Embedding(_) => {
+            // For now, we assume multimodal models are embedding models
+            // In the future, we might need a specific ModelType::MultiModal
+        }
+        _ => {
+            let message = "model is not a multimodal embedding model".to_string();
+            tracing::error!("{message}");
+            let err = ErrorResponse {
+                error: message,
+                error_type: ErrorType::Backend,
+            };
+            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            counter.increment(1);
+            Err(err)?;
+        }
+    }
+
+    let truncate = req.truncate.unwrap_or(info.auto_truncate);
+
+    let (response, metadata) = match req.inputs {
+        MultiModalInputs::Single(input) => {
+            metrics::counter!("te_request_count", "method" => "single_multimodal").increment(1);
+
+            let compute_chars = input.count_chars();
+
+            let permit = infer.try_acquire_permit().map_err(ErrorResponse::from)?;
+            
+            // Convert multimodal input to text for processing
+            // For now, we'll just use the text part and ignore images
+            // TODO: Implement proper multimodal processing
+            let text_input = format_multimodal_input(&input);
+            
+            let response = infer
+                .embed_pooled(
+                    text_input.into(),
+                    truncate,
+                    req.truncation_direction.into(),
+                    req.prompt_name,
+                    req.normalize,
+                    req.dimensions,
+                    permit,
+                )
+                .await
+                .map_err(ErrorResponse::from)?;
+
+            metrics::counter!("te_request_success", "method" => "single_multimodal").increment(1);
+
+            (
+                EmbedResponse(vec![response.results]),
+                ResponseMetadata::new(
+                    compute_chars,
+                    response.metadata.prompt_tokens,
+                    start_time,
+                    response.metadata.tokenization,
+                    response.metadata.queue,
+                    response.metadata.inference,
+                ),
+            )
+        }
+        MultiModalInputs::Batch(inputs) => {
+            let counter = metrics::counter!("te_request_count", "method" => "batch_multimodal");
+            counter.increment(1);
+
+            if inputs.is_empty() {
+                let message = "`inputs` cannot be empty".to_string();
+                tracing::error!("{message}");
+                let err = ErrorResponse {
+                    error: message,
+                    error_type: ErrorType::Empty,
+                };
+                let counter = metrics::counter!("te_request_failure", "err" => "validation");
+                counter.increment(1);
+                Err(err)?;
+            }
+
+            let batch_size = inputs.len();
+            if batch_size > info.max_client_batch_size {
+                let message = format!(
+                    "batch size {batch_size} > maximum allowed batch size {}",
+                    info.max_client_batch_size
+                );
+                tracing::error!("{message}");
+                let err = ErrorResponse {
+                    error: message,
+                    error_type: ErrorType::Validation,
+                };
+                let counter = metrics::counter!("te_request_failure", "err" => "batch_size");
+                counter.increment(1);
+                Err(err)?;
+            }
+
+            let mut futures = Vec::with_capacity(batch_size);
+            let mut compute_chars = 0;
+
+            for input in inputs {
+                compute_chars += input.count_chars();
+
+                let local_infer = infer.clone();
+                let prompt_name = req.prompt_name.clone();
+                let text_input = format_multimodal_input(&input);
+                
+                futures.push(async move {
+                    let permit = local_infer.acquire_permit().await;
+                    local_infer
+                        .embed_pooled(
+                            text_input.into(),
+                            truncate,
+                            req.truncation_direction.into(),
+                            prompt_name,
+                            req.normalize,
+                            req.dimensions,
+                            permit,
+                        )
+                        .await
+                });
+            }
+
+            let results = join_all(futures)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<PooledEmbeddingsInferResponse>, _>>()
+                .map_err(ErrorResponse::from)?;
+
+            metrics::counter!("te_request_success", "method" => "batch_multimodal").increment(1);
+
+            let mut embeddings = Vec::with_capacity(batch_size);
+            let mut total_tokenization_time = 0;
+            let mut total_queue_time = 0;
+            let mut total_inference_time = 0;
+            let mut total_prompt_tokens = 0;
+
+            for r in results {
+                embeddings.push(r.results);
+                total_tokenization_time += r.metadata.tokenization.as_nanos() as u64;
+                total_queue_time += r.metadata.queue.as_nanos() as u64;
+                total_inference_time += r.metadata.inference.as_nanos() as u64;
+                total_prompt_tokens += r.metadata.prompt_tokens;
+            }
+
+            let batch_size = batch_size as u64;
+            (
+                EmbedResponse(embeddings),
+                ResponseMetadata::new(
+                    compute_chars,
+                    total_prompt_tokens,
+                    start_time,
+                    Duration::from_nanos(total_tokenization_time / batch_size),
+                    Duration::from_nanos(total_queue_time / batch_size),
+                    Duration::from_nanos(total_inference_time / batch_size),
+                ),
+            )
+        }
+    };
+
+    metadata.record_span(&span);
+    metadata.record_metrics();
+
+    let headers = HeaderMap::from(metadata);
+
+    tracing::info!("Success");
+
+    Ok((headers, Json(response)))
+}
+
+/// Helper function to format multimodal input for processing
+fn format_multimodal_input(input: &MultiModalInput) -> String {
+    // For now, we'll format the input based on the input_type
+    let prefix = match input.input_type.as_deref() {
+        Some("query") => "Query: ",
+        Some("passage") => "Passage: ",
+        _ => "Passage: ", // Default to passage
+    };
+    
+    // If there's an image, we'll add a placeholder
+    // TODO: Implement proper multimodal processing with actual image data
+    if input.image.is_some() {
+        format!("<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}{}<|im_end|>\n", prefix, input.text)
+    } else {
+        format!("{}{}", prefix, input.text)
+    }
 }
 
 /// Get Sparse Embeddings. Returns a 424 status code if the model is not an embedding model with SPLADE pooling.
@@ -1760,6 +1982,7 @@ pub async fn run(
         .route("/embed", post(embed))
         .route("/embed_all", post(embed_all))
         .route("/embed_sparse", post(embed_sparse))
+        .route("/embed_multimodal", post(embed_multimodal))
         .route("/predict", post(predict))
         .route("/rerank", post(rerank))
         .route("/similarity", post(similarity))

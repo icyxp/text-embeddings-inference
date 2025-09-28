@@ -8,10 +8,10 @@ MODEL ?= Qwen/Qwen3-Reranker-0.6B
 OUTPUT_DIR ?= ./converted_models
 
 help:
-	@echo "Qwen3 Model Conversion Makefile"
-	@echo "================================"
+	@echo "Text Embeddings Inference Examples Makefile"
+	@echo "============================================"
 	@echo ""
-	@echo "Available targets:"
+	@echo "🔄 Qwen3 Model Conversion:"
 	@echo "  help           - Show this help message"
 	@echo "  install        - Install required dependencies"
 	@echo "  test           - Run conversion tests"
@@ -23,6 +23,14 @@ help:
 	@echo "  example        - Run usage examples"
 	@echo "  clean          - Clean up generated files"
 	@echo ""
+	@echo "🖼️ Jina VL Multimodal Embedding:"
+	@echo "  test-jina-vl      - Run integration tests"
+	@echo "  example-jina-vl   - Run Python examples"
+	@echo "  curl-jina-vl      - Run cURL examples"
+	@echo "  benchmark-jina-vl - Run performance benchmark"
+	@echo "  jina-vl-all       - Run all Jina VL examples"
+	@echo "  help-jina-vl      - Show Jina VL specific help"
+	@echo ""
 	@echo "Variables:"
 	@echo "  MODEL          - Model to convert (default: $(MODEL))"
 	@echo "  OUTPUT_DIR     - Output directory (default: $(OUTPUT_DIR))"
@@ -30,8 +38,8 @@ help:
 	@echo "Examples:"
 	@echo "  make test"
 	@echo "  make convert-small"
+	@echo "  make test-jina-vl"
 	@echo "  make convert-custom MODEL=Qwen/Qwen3-Reranker-4B"
-	@echo "  make convert-custom MODEL=./local/model OUTPUT_DIR=./my_output"
 
 install:
 	@echo "📦 Installing required dependencies..."
@@ -123,3 +131,37 @@ quickstart: install test-quick convert-small example
 	@echo "✅ Examples run"
 	@echo ""
 	@echo "Your converted model is ready at: $(OUTPUT_DIR)/qwen3-0.6b-seq-cls"
+
+# Jina VL targets
+test-jina-vl:
+	@echo "🧪 Testing Jina VL integration..."
+	python test_jina_vl_integration.py
+
+example-jina-vl:
+	@echo "🚀 Running Jina VL examples..."
+	python jina_vl_multimodal_example.py
+
+curl-jina-vl:
+	@echo "📡 Running Jina VL cURL examples..."
+	./jina_vl_curl_examples.sh
+
+benchmark-jina-vl:
+	@echo "⚡ Running Jina VL benchmark..."
+	python benchmark_jina_vl.py
+
+jina-vl-all: test-jina-vl example-jina-vl curl-jina-vl
+	@echo "🎉 All Jina VL examples completed!"
+
+help-jina-vl:
+	@echo "Jina VL Multimodal Embedding Targets:"
+	@echo "  test-jina-vl      - Run integration tests"
+	@echo "  example-jina-vl   - Run Python examples"
+	@echo "  curl-jina-vl      - Run cURL examples"
+	@echo "  benchmark-jina-vl - Run performance benchmark"
+	@echo "  jina-vl-all       - Run all Jina VL examples"
+	@echo ""
+	@echo "Prerequisites:"
+	@echo "  Start the service with:"
+	@echo "  text-embeddings-router --model-id /data/jina-embeddings-v4-vllm-retrieval \\"
+	@echo "                        --json-output --payload-limit 2000000 \\"
+	@echo "                        --auto-truncate --max-client-batch-size 200"

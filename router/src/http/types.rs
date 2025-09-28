@@ -313,6 +313,31 @@ pub(crate) enum Input {
     Batch(Vec<InputType>),
 }
 
+/// Multimodal input containing text and optional image
+#[derive(Deserialize, ToSchema, Debug)]
+pub(crate) struct MultiModalInput {
+    /// Text content
+    pub text: String,
+    /// Base64 encoded image (optional)
+    pub image: Option<String>,
+    /// Input type (query, passage, etc.)
+    pub input_type: Option<String>,
+}
+
+impl MultiModalInput {
+    pub(crate) fn count_chars(&self) -> usize {
+        self.text.chars().count()
+    }
+}
+
+/// Multimodal input enum for single or batch requests
+#[derive(Deserialize, ToSchema)]
+#[serde(untagged)]
+pub(crate) enum MultiModalInputs {
+    Single(MultiModalInput),
+    Batch(Vec<MultiModalInput>),
+}
+
 #[derive(Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EncodingFormat {
@@ -451,6 +476,34 @@ pub(crate) struct EmbedRequest {
 
 fn default_normalize() -> bool {
     true
+}
+
+/// Multimodal embed request
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct MultiModalEmbedRequest {
+    /// Multimodal inputs to embed
+    pub inputs: MultiModalInputs,
+    
+    #[serde(default)]
+    #[schema(default = "false", example = "false", nullable = true)]
+    pub truncate: Option<bool>,
+
+    #[serde(default)]
+    #[schema(default = "right", example = "right")]
+    pub truncation_direction: TruncationDirection,
+
+    /// The name of the prompt that should be used by for encoding. If not set, no prompt
+    /// will be applied.
+    #[schema(default = "null", example = "null", nullable = true)]
+    pub prompt_name: Option<String>,
+
+    #[serde(default = "default_normalize")]
+    #[schema(default = "true", example = "true")]
+    pub normalize: bool,
+
+    /// The number of dimensions that the output embeddings should have.
+    #[schema(default = "null", example = "null", nullable = true)]
+    pub dimensions: Option<usize>,
 }
 
 #[derive(Serialize, ToSchema)]

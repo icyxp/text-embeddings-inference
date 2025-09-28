@@ -124,3 +124,53 @@ class FlashBatch(Batch):
 
     def __len__(self):
         return self.size
+
+
+@dataclass
+class MultiModalBatch(Batch):
+    """
+    Batch class for multimodal inputs (text + images)
+    Used by JinaVL and other vision-language models
+    """
+    input_ids: list  # List of token sequences
+    images: list     # List of image data (PIL Images, base64 strings, or None)
+    texts: list      # List of original text strings
+    size: int
+
+    @classmethod
+    @tracer.start_as_current_span("from_pb")
+    def from_pb(
+        cls, pb: embed_pb2.EmbedRequest, device: torch.device, max_input_length: int
+    ) -> "MultiModalBatch":
+        """
+        Create MultiModalBatch from protobuf request
+        
+        For multimodal requests, we expect:
+        - input_ids: tokenized text
+        - images: base64 encoded images (if any)
+        - texts: original text strings
+        """
+        batch_size = len(pb.cu_seq_lengths) - 1
+        
+        # Extract input_ids for each sequence
+        input_ids = []
+        for i in range(batch_size):
+            start_idx = pb.cu_seq_lengths[i]
+            end_idx = pb.cu_seq_lengths[i + 1]
+            seq_input_ids = pb.input_ids[start_idx:end_idx]
+            input_ids.append(seq_input_ids)
+        
+        # Extract images and texts from the request
+        # These would be passed through custom fields in the protobuf
+        images = getattr(pb, 'images', [None] * batch_size)
+        texts = getattr(pb, 'texts', [''] * batch_size)
+        
+        return MultiModalBatch(
+            input_ids=input_ids,
+            images=images,
+            texts=texts,
+            size=batch_size,
+        )
+
+    def __len__(self):
+        return self.size

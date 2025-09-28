@@ -14,6 +14,7 @@ from text_embeddings_server.models.classification_model import ClassificationMod
 from text_embeddings_server.models.jinaBert_model import FlashJinaBert
 from text_embeddings_server.models.flash_mistral import FlashMistral
 from text_embeddings_server.models.flash_qwen3 import FlashQwen3
+from text_embeddings_server.models.jina_vl import JinaVLModel
 from text_embeddings_server.utils.device import get_device, use_ipex
 
 __all__ = ["Model"]
@@ -127,6 +128,17 @@ def get_model(model_path: Path, dtype: Optional[str], pool: str):
             return create_model(FlashQwen3, model_path, device, datatype, pool)
         except FileNotFoundError:
             return create_model(DefaultModel, model_path, device, datatype, pool)
+
+    # Check for Jina VL model (Qwen2_5_VLForConditionalGeneration)
+    if (config.model_type == "qwen2_5_vl" or 
+        (hasattr(config, 'architectures') and 
+         any('Qwen2_5_VLForConditionalGeneration' in arch for arch in config.architectures))):
+        logger.info("Detected Jina VL model (Qwen2_5_VLForConditionalGeneration)")
+        return JinaVLModel(
+            model_path=str(model_path),
+            device=device,
+            dtype=datatype,
+        )
 
     # Default case
     if config.architectures[0].endswith("Classification"):
