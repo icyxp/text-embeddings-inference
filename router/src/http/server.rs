@@ -833,7 +833,7 @@ async fn embed_multimodal(
             
             let response = infer
                 .embed_pooled(
-                    text_input.into(),
+                    text_input,
                     truncate,
                     req.truncation_direction.into(),
                     req.prompt_name,
@@ -904,7 +904,7 @@ async fn embed_multimodal(
                     let permit = local_infer.acquire_permit().await;
                     local_infer
                         .embed_pooled(
-                            text_input.into(),
+                            text_input,
                             truncate,
                             req.truncation_direction.into(),
                             prompt_name,
