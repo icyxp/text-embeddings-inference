@@ -106,6 +106,9 @@ enum Config {
     Qwen2(Qwen2Config),
     #[allow(dead_code)]
     Qwen3(Qwen3Config),
+    #[serde(rename = "qwen2_5_vl")]
+    #[allow(dead_code)]
+    Qwen25Vl(Qwen2Config),
     #[serde(rename = "mpnet")]
     MPNet(MPNetConfig),
     #[serde(rename(deserialize = "modernbert"))]
@@ -282,6 +285,10 @@ impl CandleBackend {
                 tracing::info!("Starting Qwen3 model on {:?}", device);
                 Ok(Box::new(Qwen3Model::load(vb, &config, model_type).s()?))
             }
+            (Config::Qwen25Vl(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
+                "Qwen2.5-VL is only supported on Cuda devices in fp16 with flash attention enabled"
+                    .to_string(),
+            )),
             (Config::MPNet(config), _) => {
                 tracing::info!("Starting MPNet model on {:?}", device);
                 Ok(Box::new(MPNetModel::load(vb, &config, model_type).s()?))
@@ -468,6 +475,19 @@ impl CandleBackend {
                         FlashQwen3Model::load(vb, &config, model_type).s()?,
                     ))
                 }
+            }
+            #[cfg(feature = "cuda")]
+            (Config::Qwen25Vl(config), Device::Cuda(_)) => {
+                if dtype != DType::F16
+                    || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
+                {
+                    return Err(BackendError::Start("Qwen2.5-VL is only supported on Cuda devices in fp16 with flash attention v2 enabled".to_string()));
+                }
+                tracing::info!("Starting FlashQwen2.5-VL model on {:?}", device);
+                // Use FlashQwen2 as Qwen2.5-VL is based on Qwen2 architecture
+                Ok(Box::new(
+                    FlashQwen2Model::load(vb, &config, model_type).s()?,
+                ))
             }
         };
 
