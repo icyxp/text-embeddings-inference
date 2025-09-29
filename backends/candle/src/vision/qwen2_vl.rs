@@ -148,8 +148,10 @@ impl Qwen2VlVisionEncoder {
         }
         // Try to load patch projection if present
         let patch_proj = if vb.contains_tensor("visual.patch_embed.proj.weight") {
-            let w = vb.pp("visual.patch_embed.proj").get((hidden, hidden), "weight")?;
-            Some(Linear::new(w, None, None))
+            match vb.pp("visual.patch_embed.proj").get((hidden, hidden), "weight") {
+                Ok(w) => Some(Linear::new(w, None, None)),
+                Err(_) => None, // weight likely conv-shaped; ignore and fall back
+            }
         } else { None };
 
         Ok(Self { config, device: device.clone(), dtype, pos_table: None, out_proj, patch_proj, blocks, vision_hidden: hidden })
