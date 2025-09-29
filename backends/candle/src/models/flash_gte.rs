@@ -379,6 +379,10 @@ impl FlashGTEModel {
                 Pool::Splade => {
                     unreachable!();
                 }
+                Pool::Vision => {
+                    // Vision pooling not supported, fall back to CLS
+                    outputs.i((.., 0))?
+                }
             }
         } else {
             None

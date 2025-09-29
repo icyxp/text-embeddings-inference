@@ -94,13 +94,15 @@ impl JinaVLModel {
         // Load the underlying Qwen2 model
         #[cfg(feature = "cuda")]
         {
+            let device = _vb.device().clone();
+            let dtype = _vb.dtype();
             let qwen2_model = Box::new(FlashQwen2Model::load(_vb, &_qwen2_config, _model_type)?) as Box<dyn Model + Send>;
             
             Ok(Self {
                 qwen2_model,
                 config: config.clone(),
-                device: _vb.device().clone(),
-                dtype: _vb.dtype(),
+                device,
+                dtype,
             })
         }
 

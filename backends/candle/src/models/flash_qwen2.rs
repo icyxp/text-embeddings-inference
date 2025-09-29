@@ -418,6 +418,28 @@ impl FlashQwen2Model {
                 Pool::Splade => {
                     unreachable!();
                 }
+                Pool::Vision => {
+                    // Vision pooling is not supported for this model
+                    // Fall back to last token pooling
+                    if batch_size > 1 {
+                        let end = cu_seqlens.narrow(0, 1, batch_size)?;
+                        let indices = (&end - &end.ones_like()?)?;
+                        
+                        if has_raw_requests {
+                            let pooled_indices = Tensor::from_vec(
+                                batch.pooled_indices.clone(),
+                                batch.pooled_indices.len(),
+                                &self.device,
+                            )?;
+                            let indices = indices.index_select(&pooled_indices, 0)?;
+                            Some(outputs.index_select(&indices, 0)?)
+                        } else {
+                            Some(outputs.index_select(&indices, 0)?)
+                        }
+                    } else {
+                        Some(outputs.i(batch.cumulative_seq_lengths[1] as usize - 1)?.unsqueeze(0)?)
+                    }
+                }
             }
         } else {
             None
