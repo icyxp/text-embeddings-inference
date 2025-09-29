@@ -488,6 +488,10 @@ impl FlashBertModel {
                         Some(relu_log.max_keepdim(0)?)
                     }
                 }
+                Pool::Vision => {
+                    // Vision pooling not supported, fall back to CLS
+                    Some(outputs.i((.., 0))?)
+                }
             }
         } else {
             None

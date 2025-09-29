@@ -391,22 +391,25 @@ impl Qwen3ClassificationHead {
 
         // Try different common classification head layer names
         // The tomaarsen/Qwen3-Reranker models have score.weight at the top level with no bias
-        let classifier = if let Ok(weight) = vb.get((n_classes, config.hidden_size), "score.weight") {
+        let classifier = if let Ok(weight) = vb.get((n_classes, config.hidden_size), "score.weight")
+        {
             // No bias for score layer in converted Qwen3 rerankers
             Linear::new(weight, None, None)
         } else if let (Ok(weight), Ok(bias)) = (
-            vb.pp("classifier").get((n_classes, config.hidden_size), "weight"),
-            vb.pp("classifier").get(n_classes, "bias")
+            vb.pp("classifier")
+                .get((n_classes, config.hidden_size), "weight"),
+            vb.pp("classifier").get(n_classes, "bias"),
         ) {
             Linear::new(weight, Some(bias), None)
         } else if let (Ok(weight), Ok(bias)) = (
-            vb.pp("score").get((n_classes, config.hidden_size), "weight"),
-            vb.pp("score").get(n_classes, "bias")
+            vb.pp("score")
+                .get((n_classes, config.hidden_size), "weight"),
+            vb.pp("score").get(n_classes, "bias"),
         ) {
             Linear::new(weight, Some(bias), None)
         } else if let (Ok(weight), Ok(bias)) = (
             vb.get((n_classes, config.hidden_size), "classifier.weight"),
-            vb.get(n_classes, "classifier.bias")
+            vb.get(n_classes, "classifier.bias"),
         ) {
             Linear::new(weight, Some(bias), None)
         } else {
@@ -447,7 +450,7 @@ impl Qwen3Model {
         let (pool, classification_head) = match model_type {
             ModelType::Classifier => {
                 let classification_head = Some(Qwen3ClassificationHead::load(vb.clone(), config)?);
-                (Pool::LastToken, classification_head) 
+                (Pool::LastToken, classification_head)
             }
             ModelType::Embedding(pool) => (pool, None),
         };
@@ -713,11 +716,18 @@ impl Qwen3Model {
                     // Vision pooling is not supported for this model
                     // Fall back to mean pooling
                     let input_lengths_tensor = Tensor::from_vec(
-                        input_lengths.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
+                        input_lengths
+                            .iter()
+                            .map(|&x| x as f32)
+                            .collect::<Vec<f32>>(),
                         input_lengths.len(),
-                        &outputs.device()
+                        &outputs.device(),
                     )?;
-                    Some(outputs.sum(1)?.broadcast_div(&input_lengths_tensor.unsqueeze(1)?)?)
+                    Some(
+                        outputs
+                            .sum(1)?
+                            .broadcast_div(&input_lengths_tensor.unsqueeze(1)?)?,
+                    )
                 }
             }
         } else {

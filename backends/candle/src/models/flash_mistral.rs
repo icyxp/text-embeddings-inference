@@ -402,7 +402,7 @@ impl FlashMistralModel {
                 }
                 Pool::Vision => {
                     // Vision pooling not supported, fall back to CLS
-                    outputs.i((.., 0))?
+                    Some(outputs.i((.., 0))?)
                 }
             }
         } else {

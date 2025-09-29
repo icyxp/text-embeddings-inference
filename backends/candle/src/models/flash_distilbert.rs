@@ -357,6 +357,10 @@ impl FlashDistilBertModel {
                         relu_log.max_keepdim(0)?
                     }
                 }
+                Pool::Vision => {
+                    // Vision pooling not supported, fall back to CLS
+                    outputs.i((.., 0))?
+                }
             };
             Some(pooled_embeddings)
         } else {

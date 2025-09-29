@@ -12,15 +12,15 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, JinaBertModel, JinaCodeBertModel, JinaVLConfig, JinaVLModel, MPNetConfig, MPNetModel, MistralConfig,
-    Model, ModernBertConfig, ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config,
-    Qwen3Config, Qwen3Model,
+    GTEConfig, GTEModel, JinaBertModel, JinaCodeBertModel, JinaVLConfig, JinaVLModel, MPNetConfig,
+    MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel, NomicBertModel,
+    NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
-    FlashJinaCodeBertModel, FlashJinaVLModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
-    FlashQwen2Model, FlashQwen3Model,
+    FlashJinaCodeBertModel, FlashJinaVLModel, FlashMistralModel, FlashModernBertModel,
+    FlashNomicBertModel, FlashQwen2Model, FlashQwen3Model,
 };
 use anyhow::Context;
 use candle::{DType, Device};

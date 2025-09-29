@@ -65,12 +65,7 @@ fn test_qwen3_reranker() -> Result<()> {
     )?;
 
     let input_single = batch(
-        vec![tokenizer
-            .encode(
-                "What is Deep Learning?",
-                true,
-            )
-            .unwrap()],
+        vec![tokenizer.encode("What is Deep Learning?", true).unwrap()],
         [0].to_vec(),
         vec![],
     );

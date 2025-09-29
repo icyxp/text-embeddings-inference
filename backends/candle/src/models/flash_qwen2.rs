@@ -308,15 +308,13 @@ impl FlashQwen2Model {
         })
     }
 
-    pub fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
-        let _enter = self.span.enter();
-
+    pub fn encode_hidden(&self, batch: &Batch) -> Result<(Tensor, Tensor)> {
         let batch_size = batch.cumulative_seq_lengths.len() - 1;
         let shape = batch.input_ids.len();
 
         // Create Cuda tensors
-        let input_ids = Tensor::from_vec(batch.input_ids, shape, &self.device)?;
-        let position_ids = Tensor::from_vec(batch.position_ids, shape, &self.device)?;
+        let input_ids = Tensor::from_vec(batch.input_ids.clone(), shape, &self.device)?;
+        let position_ids = Tensor::from_vec(batch.position_ids.clone(), shape, &self.device)?;
         let cu_seqlens = Tensor::from_vec(
             batch.cumulative_seq_lengths.clone(),
             batch_size + 1,
@@ -343,6 +341,16 @@ impl FlashQwen2Model {
         }
 
         let (outputs, _) = self.norm.forward(&hidden_states, residual.as_ref())?;
+        Ok((outputs, cu_seqlens))
+    }
+
+    pub fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
+        let _enter = self.span.enter();
+
+        let batch_size = batch.cumulative_seq_lengths.len() - 1;
+        let shape = batch.input_ids.len();
+
+        let (outputs, cu_seqlens) = self.encode_hidden(&batch)?;
 
         let has_pooling_requests = !batch.pooled_indices.is_empty();
         let has_raw_requests = !batch.raw_indices.is_empty();
@@ -424,7 +432,7 @@ impl FlashQwen2Model {
                     if batch_size > 1 {
                         let end = cu_seqlens.narrow(0, 1, batch_size)?;
                         let indices = (&end - &end.ones_like()?)?;
-                        
+
                         if has_raw_requests {
                             let pooled_indices = Tensor::from_vec(
                                 batch.pooled_indices.clone(),
@@ -437,7 +445,11 @@ impl FlashQwen2Model {
                             Some(outputs.index_select(&indices, 0)?)
                         }
                     } else {
-                        Some(outputs.i(batch.cumulative_seq_lengths[1] as usize - 1)?.unsqueeze(0)?)
+                        Some(
+                            outputs
+                                .i(batch.cumulative_seq_lengths[1] as usize - 1)?
+                                .unsqueeze(0)?,
+                        )
                     }
                 }
             }

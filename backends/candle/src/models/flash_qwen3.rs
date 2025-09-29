@@ -1,7 +1,7 @@
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::{get_cos_sin, get_inv_freqs, HiddenAct, Linear, RMSNorm};
-use crate::models::{Model, Qwen3Config};
 use crate::models::qwen3::Qwen3ClassificationHead;
+use crate::models::{Model, Qwen3Config};
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
 use candle_rotary::apply_rotary_inplace;
@@ -418,9 +418,8 @@ impl FlashQwen3Model {
                         // Select the appropriate indices based on pooled_indices
                         let indices = if has_raw_requests {
                             // Select only the sequences that need pooling
-                            let pooled_indices_vec: Vec<i64> = batch.pooled_indices.iter()
-                                .map(|&idx| idx as i64)
-                                .collect();
+                            let pooled_indices_vec: Vec<i64> =
+                                batch.pooled_indices.iter().map(|&idx| idx as i64).collect();
                             let pooled_indices = Tensor::from_vec(
                                 pooled_indices_vec,
                                 batch.pooled_indices.len(),
@@ -475,7 +474,7 @@ impl FlashQwen3Model {
                 }
                 Pool::Vision => {
                     // Vision pooling not supported, fall back to CLS
-                    outputs.i((.., 0))?
+                    Some(outputs.i((.., 0))?)
                 }
             }
         } else {
