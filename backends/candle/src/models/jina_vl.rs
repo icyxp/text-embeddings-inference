@@ -152,9 +152,10 @@ impl JinaVLModel {
                 embeddings.i(seq_len - 1)?
             }
         } else {
-            let seq_len = embeddings.dim(0)?;
-            embeddings.i(seq_len - 1)?
+            embeddings.mean(0)?
         };
+
+        let pooled = pooled.to_dtype(DType::F32)?;
 
         let norm = pooled.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
         let denom = (&norm + 1e-12f64)?;

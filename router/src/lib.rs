@@ -433,12 +433,23 @@ pub struct PoolConfig {
     pooling_mode_mean_tokens: bool,
     #[serde(default)]
     pooling_mode_lasttoken: bool,
+    #[serde(default)]
+    pooling_mode_vision: bool,
+    #[serde(default)]
+    pooling_type: Option<String>,
 }
 
 impl TryFrom<PoolConfig> for Pool {
     type Error = anyhow::Error;
 
     fn try_from(config: PoolConfig) -> std::result::Result<Self, Self::Error> {
+        if let Some(pooling_type) = &config.pooling_type {
+            if pooling_type.eq_ignore_ascii_case("vision")
+                || pooling_type.eq_ignore_ascii_case("vision_aware")
+            {
+                return Ok(Pool::Vision);
+            }
+        }
         if config.pooling_mode_cls_token {
             return Ok(Pool::Cls);
         }
@@ -447,6 +458,9 @@ impl TryFrom<PoolConfig> for Pool {
         }
         if config.pooling_mode_lasttoken {
             return Ok(Pool::LastToken);
+        }
+        if config.pooling_mode_vision {
+            return Ok(Pool::Vision);
         }
         Err(anyhow!("Pooling config {config:?} is not supported"))
     }
