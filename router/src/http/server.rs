@@ -1862,6 +1862,7 @@ pub async fn run(
     embed,
     embed_all,
     embed_sparse,
+    embed_multimodal,
     openai_embed,
     similarity,
     tokenize,
@@ -1872,6 +1873,9 @@ pub async fn run(
     schemas(
     PredictInput,
     Input,
+    MultiModalInput,
+    MultiModalInputs,
+    MultiModalEmbedRequest,
     Info,
     ModelType,
     ClassifierModel,

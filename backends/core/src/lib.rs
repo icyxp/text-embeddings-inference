@@ -14,6 +14,12 @@ pub struct Batch {
     pub max_length: u32,
     pub pooled_indices: Vec<u32>,
     pub raw_indices: Vec<u32>,
+    /// Optional multi-axis RoPE positions for mRoPE models.
+    /// If present, contains 3*number_of_tokens positions in the order [T_axis || H_axis || W_axis].
+    /// When None, standard 1D RoPE positions are used.
+    pub mrope_positions: Option<Vec<u32>>,
+    /// Optional image grid (T, H, W) derived from preprocessing; used by vision encoders.
+    pub image_grid_thw: Option<(u32, u32, u32)>,
 }
 
 impl Batch {

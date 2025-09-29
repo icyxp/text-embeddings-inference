@@ -239,6 +239,7 @@ pub struct FlashQwen2Model {
     sin_cache: Tensor,
     pool: Pool,
     pub device: Device,
+    mrope_section: Option<Vec<usize>>,
 
     span: tracing::Span,
 }
@@ -289,12 +290,27 @@ impl FlashQwen2Model {
             vb.device(),
             None,
         )?;
+        // Enlarge rotary cache if mrope is configured
+        let rope_mult = if let Some(rs) = &config.rope_scaling {
+            if rs.mrope_section.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+                4usize
+            } else {
+                1usize
+            }
+        } else {
+            1usize
+        };
         let (cos_cache, sin_cache) = get_cos_sin(
-            config.max_position_embeddings,
+            config.max_position_embeddings * rope_mult,
             &inv_freqs,
             vb.dtype(),
             false,
         )?;
+
+        let mrope_section = config
+            .rope_scaling
+            .as_ref()
+            .and_then(|r| r.mrope_section.as_ref().cloned());
 
         Ok(Self {
             embeddings,
@@ -304,6 +320,7 @@ impl FlashQwen2Model {
             sin_cache,
             pool,
             device: vb.device().clone(),
+            mrope_section,
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
     }
@@ -323,8 +340,93 @@ impl FlashQwen2Model {
 
         let mut hidden_states = self.embeddings.forward(&input_ids)?;
 
-        let cos = self.cos_cache.index_select(&position_ids, 0)?;
-        let sin = self.sin_cache.index_select(&position_ids, 0)?;
+        let mut cos = self.cos_cache.index_select(&position_ids, 0)?;
+        let mut sin = self.sin_cache.index_select(&position_ids, 0)?;
+
+        // If mRoPE positions are provided and the config defines sections, build segmented cos/sin
+        if let Some(ref sections) = self.mrope_section {
+            if let Some(ref mpos) = batch.mrope_positions {
+                let tokens = position_ids.dims()[0];
+                if mpos.len() == tokens * 3 {
+                        let tpos = Tensor::from_vec(
+                            mpos[0..tokens].to_vec(),
+                            tokens,
+                            &self.device,
+                        )?;
+                        let hpos = Tensor::from_vec(
+                            mpos[tokens..2 * tokens].to_vec(),
+                            tokens,
+                            &self.device,
+                        )?;
+                        let wpos = Tensor::from_vec(
+                            mpos[2 * tokens..3 * tokens].to_vec(),
+                            tokens,
+                            &self.device,
+                        )?;
+                        let cos_t = self.cos_cache.index_select(&tpos, 0)?;
+                        let cos_h = self.cos_cache.index_select(&hpos, 0)?;
+                        let cos_w = self.cos_cache.index_select(&wpos, 0)?;
+                        let sin_t = self.sin_cache.index_select(&tpos, 0)?;
+                        let sin_h = self.sin_cache.index_select(&hpos, 0)?;
+                        let sin_w = self.sin_cache.index_select(&wpos, 0)?;
+
+                        // Recompose along rotary dimension: [t_segment | h_segment | w_segment]
+                        let mut start = 0;
+                        let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
+                        // Expect 3 sections corresponding to T/H/W
+                        for (i, seg) in sections.iter().enumerate() {
+                            let len = *seg;
+                            let src_c = match i {
+                                0 => &cos_t,
+                                1 => &cos_h,
+                                _ => &cos_w,
+                            };
+                            let src_s = match i {
+                                0 => &sin_t,
+                                1 => &sin_h,
+                                _ => &sin_w,
+                            };
+                            cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
+                            sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
+                            start += len;
+                        }
+                        cos = Tensor::cat(&cos_parts, candle::D::Minus1)?;
+                        sin = Tensor::cat(&sin_parts, candle::D::Minus1)?;
+                    }
+                }
+            } else {
+                // Fallback: use 1D positions for all axes (text-only approximation)
+                let tpos = position_ids.clone();
+                let hpos = position_ids.clone();
+                let wpos = position_ids.clone();
+                let cos_t = self.cos_cache.index_select(&tpos, 0)?;
+                let cos_h = self.cos_cache.index_select(&hpos, 0)?;
+                let cos_w = self.cos_cache.index_select(&wpos, 0)?;
+                let sin_t = self.sin_cache.index_select(&tpos, 0)?;
+                let sin_h = self.sin_cache.index_select(&hpos, 0)?;
+                let sin_w = self.sin_cache.index_select(&wpos, 0)?;
+                let mut start = 0;
+                let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
+                for (i, seg) in sections.iter().enumerate() {
+                    let len = *seg;
+                    let src_c = match i {
+                        0 => &cos_t,
+                        1 => &cos_h,
+                        _ => &cos_w,
+                    };
+                    let src_s = match i {
+                        0 => &sin_t,
+                        1 => &sin_h,
+                        _ => &sin_w,
+                    };
+                    cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
+                    sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
+                    start += len;
+                }
+                cos = Tensor::cat(&cos_parts, candle::D::Minus1)?;
+                sin = Tensor::cat(&sin_parts, candle::D::Minus1)?;
+            }
+        }
 
         let mut residual = None;
         for layer in &self.layers {
@@ -342,6 +444,73 @@ impl FlashQwen2Model {
 
         let (outputs, _) = self.norm.forward(&hidden_states, residual.as_ref())?;
         Ok((outputs, cu_seqlens))
+    }
+
+    pub fn embed_only(&self, batch: &Batch) -> Result<(Tensor, Tensor, Tensor, Tensor, usize)> {
+        let batch_size = batch.cumulative_seq_lengths.len() - 1;
+        let shape = batch.input_ids.len();
+
+        let input_ids = Tensor::from_vec(batch.input_ids.clone(), shape, &self.device)?;
+        let position_ids = Tensor::from_vec(batch.position_ids.clone(), shape, &self.device)?;
+        let cu_seqlens = Tensor::from_vec(
+            batch.cumulative_seq_lengths.clone(),
+            batch_size + 1,
+            &self.device,
+        )?;
+
+        let hidden_states = self.embeddings.forward(&input_ids)?;
+
+        let mut cos = self.cos_cache.index_select(&position_ids, 0)?;
+        let mut sin = self.sin_cache.index_select(&position_ids, 0)?;
+
+        if let Some(ref sections) = self.mrope_section {
+            if let Some(ref mpos) = batch.mrope_positions {
+                let tokens = position_ids.dims()[0];
+                if mpos.len() == tokens * 3 {
+                    let tpos = Tensor::from_vec(mpos[0..tokens].to_vec(), tokens, &self.device)?;
+                    let hpos = Tensor::from_vec(mpos[tokens..2 * tokens].to_vec(), tokens, &self.device)?;
+                    let wpos = Tensor::from_vec(mpos[2 * tokens..3 * tokens].to_vec(), tokens, &self.device)?;
+                    let cos_t = self.cos_cache.index_select(&tpos, 0)?;
+                    let cos_h = self.cos_cache.index_select(&hpos, 0)?;
+                    let cos_w = self.cos_cache.index_select(&wpos, 0)?;
+                    let sin_t = self.sin_cache.index_select(&tpos, 0)?;
+                    let sin_h = self.sin_cache.index_select(&hpos, 0)?;
+                    let sin_w = self.sin_cache.index_select(&wpos, 0)?;
+                    let mut start = 0;
+                    let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
+                    for (i, seg) in sections.iter().enumerate() {
+                        let len = *seg;
+                        let src_c = match i { 0 => &cos_t, 1 => &cos_h, _ => &cos_w };
+                        let src_s = match i { 0 => &sin_t, 1 => &sin_h, _ => &sin_w };
+                        cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
+                        sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
+                        start += len;
+                    }
+                    cos = Tensor::cat(&cos_parts, candle::D::Minus1)?;
+                    sin = Tensor::cat(&sin_parts, candle::D::Minus1)?;
+                }
+            }
+        }
+
+        Ok((hidden_states, cu_seqlens, cos, sin, batch.max_length as usize))
+    }
+
+    pub fn run_layers(
+        &self,
+        mut hidden_states: Tensor,
+        cu_seqlens: &Tensor,
+        cos: &Tensor,
+        sin: &Tensor,
+        max_s: usize,
+    ) -> Result<Tensor> {
+        let mut residual = None;
+        for layer in &self.layers {
+            let (h, r) = layer.forward(&hidden_states, residual.as_ref(), cu_seqlens, cos, sin, max_s)?;
+            hidden_states = h;
+            residual = Some(r);
+        }
+        let (outputs, _) = self.norm.forward(&hidden_states, residual.as_ref())?;
+        Ok(outputs)
     }
 
     pub fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {

@@ -223,6 +223,7 @@ pub async fn run(
     };
 
     // Tokenization logic
+    let emit_mrope_duplicate = matches!(config.model_type.as_str(), "jina_vl" | "qwen2_5_vl");
     let tokenization = Tokenization::new(
         tokenization_workers,
         tokenizer,
@@ -230,6 +231,7 @@ pub async fn run(
         position_offset,
         default_prompt,
         prompts,
+        emit_mrope_duplicate,
     );
 
     // Get dtype

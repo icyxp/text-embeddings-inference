@@ -236,6 +236,10 @@ impl Backend for OrtBackend {
                     }
                 }
                 Pool::Splade => unreachable!(),
+                Pool::Vision => {
+                    // Vision pooling is not supported in ORT backend; fall back to CLS
+                    outputs.slice(s![.., 0, ..]).into_owned().into_dyn()
+                }
             };
 
             for (i, e) in batch

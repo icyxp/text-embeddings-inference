@@ -34,6 +34,7 @@ impl Tokenization {
         position_offset: usize,
         default_prompt: Option<String>,
         prompts: Option<HashMap<String, String>>,
+        emit_mrope_duplicate: bool,
     ) -> Self {
         tracing::info!("Starting {workers} tokenization workers");
 
@@ -47,6 +48,7 @@ impl Tokenization {
             let default_prompt_clone = default_prompt.clone();
             let prompts_clone = prompts.clone();
             // Spawn worker
+            let emit_mrope_duplicate_clone = emit_mrope_duplicate;
             std::thread::spawn(move || {
                 tokenizer_worker(
                     tokenizer_clone,
@@ -55,10 +57,12 @@ impl Tokenization {
                     default_prompt_clone,
                     prompts_clone,
                     receiver_clone,
+                    emit_mrope_duplicate_clone,
                 )
             });
         }
 
+        let _ = emit_mrope_duplicate; // passed to worker threads
         Self { sender }
     }
 
@@ -173,6 +177,7 @@ fn tokenizer_worker(
     default_prompt: Option<String>,
     prompts: Option<HashMap<String, String>>,
     receiver: async_channel::Receiver<TokenizerRequest>,
+    emit_mrope_duplicate: bool,
 ) {
     // Loop over requests
     while let Ok(request) = receiver.recv_blocking() {
@@ -204,6 +209,7 @@ fn tokenizer_worker(
                             prompt_name,
                             prompts.as_ref(),
                             &mut tokenizer,
+                            emit_mrope_duplicate,
                         ));
                     }
                 })
@@ -373,6 +379,7 @@ fn encode_input(
     prompt_name: Option<String>,
     prompts: Option<&HashMap<String, String>>,
     tokenizer: &mut Tokenizer,
+    emit_mrope_duplicate: bool,
 ) -> Result<ValidEncoding, TextEmbeddingsError> {
     // Default truncation params
     let truncate_params = truncate.then_some(TruncationParams {
@@ -382,7 +389,7 @@ fn encode_input(
         stride: 0,
     });
 
-    let (_, encoding) = tokenize_input(
+    let (maybe_text, encoding) = tokenize_input(
         inputs,
         true,
         max_input_length,
@@ -392,7 +399,85 @@ fn encode_input(
         prompts,
         tokenizer,
     )?;
-    let seq_len = encoding.len();
+    // Post-process for Jina-VL style image placeholders: expand <|image_pad|>
+    // and build per-axis mRoPE positions (default 1x8x8 grid)
+    const VISION_START_ID: u32 = 151652;
+    const VISION_END_ID: u32 = 151653;
+    const IMAGE_PAD_ID: u32 = 151655;
+
+    let mut ids = encoding.get_ids().to_vec();
+    let mut type_ids = encoding.get_type_ids().to_vec();
+    let mut expanded_mrope: Option<Vec<u32>> = None;
+
+    let mut image_grid_thw: Option<(u32, u32, u32)> = None;
+    if let Some(text) = &maybe_text {
+        if text.contains("<|image_pad|>") {
+            // Locate vision span
+            if let Some(start_idx) = ids.iter().position(|&v| v == VISION_START_ID) {
+                if let Some(rel_end) = ids.iter().skip(start_idx + 1).position(|&v| v == VISION_END_ID) {
+                    let end_idx = start_idx + 1 + rel_end;
+                    // Default grid 1x8x8 => 64 tokens
+                    let t = 1u32;
+                    let h = 8u32;
+                    let w = 8u32;
+                    let n_tokens = (t * h * w) as usize;
+                    image_grid_thw = Some((t as u32, h as u32, w as u32));
+
+                    // Build new ids: keep start, expand pads, then keep from end
+                    let mut new_ids = Vec::with_capacity(ids.len() + n_tokens);
+                    let mut new_type_ids = Vec::with_capacity(type_ids.len() + n_tokens);
+                    new_ids.extend_from_slice(&ids[..=start_idx]);
+                    new_type_ids.extend_from_slice(&type_ids[..=start_idx]);
+                    new_ids.extend(std::iter::repeat(IMAGE_PAD_ID).take(n_tokens));
+                    new_type_ids.extend(std::iter::repeat(0u32).take(n_tokens));
+                    new_ids.extend_from_slice(&ids[end_idx..]);
+                    new_type_ids.extend_from_slice(&type_ids[end_idx..]);
+                    ids = new_ids;
+                    type_ids = new_type_ids;
+
+                    // Build mRoPE positions for the entire sequence
+                    // Default duplication for text; THW grid for image span
+                    let seq_len = ids.len();
+                    let mut t_positions = Vec::with_capacity(seq_len);
+                    let mut h_positions = Vec::with_capacity(seq_len);
+                    let mut w_positions = Vec::with_capacity(seq_len);
+
+                    // Pre-span (including start token)
+                    let pre = start_idx + 1; // number of tokens up to and including start
+                    for i in 0..pre {
+                        let p = (position_offset as u32) + i as u32;
+                        t_positions.push(p);
+                        h_positions.push(p);
+                        w_positions.push(p);
+                    }
+                    // Image grid
+                    for i in 0..n_tokens {
+                        let ti = 0u32;
+                        let hi = (i as u32) / w;
+                        let wi = (i as u32) % w;
+                        t_positions.push(ti);
+                        h_positions.push(hi);
+                        w_positions.push(wi);
+                    }
+                    // Post-span (from end token to end of seq)
+                    let post = seq_len - (pre + n_tokens);
+                    for j in 0..post {
+                        let p = (position_offset as u32) + (pre as u32) + (n_tokens as u32) + (j as u32);
+                        t_positions.push(p);
+                        h_positions.push(p);
+                        w_positions.push(p);
+                    }
+                    let mut m = Vec::with_capacity(seq_len * 3);
+                    m.extend_from_slice(&t_positions);
+                    m.extend_from_slice(&h_positions);
+                    m.extend_from_slice(&w_positions);
+                    expanded_mrope = Some(m);
+                }
+            }
+        }
+    }
+
+    let seq_len = ids.len();
 
     if seq_len > max_input_length {
         return Err(TextEmbeddingsError::Validation(format!(
@@ -401,11 +486,25 @@ fn encode_input(
     }
     let histogram = metrics::histogram!("te_request_input_length");
     histogram.record(seq_len as f64);
+    let position_ids: Vec<u32> =
+        (position_offset as u32..(seq_len + position_offset) as u32).collect::<Vec<_>>();
+    let mrope_positions = if let Some(m) = expanded_mrope {
+        Some(m)
+    } else if emit_mrope_duplicate {
+        let mut m = Vec::with_capacity(seq_len * 3);
+        m.extend_from_slice(&position_ids);
+        m.extend_from_slice(&position_ids);
+        m.extend_from_slice(&position_ids);
+        Some(m)
+    } else {
+        None
+    };
     Ok(ValidEncoding {
-        input_ids: encoding.get_ids().to_vec(),
-        token_type_ids: encoding.get_type_ids().to_vec(),
-        position_ids: (position_offset as u32..(seq_len + position_offset) as u32)
-            .collect::<Vec<_>>(),
+        input_ids: ids,
+        token_type_ids: type_ids,
+        position_ids,
+        mrope_positions,
+        image_grid_thw,
     })
 }
 
@@ -414,6 +513,8 @@ pub struct ValidEncoding {
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,
     pub position_ids: Vec<u32>,
+    pub mrope_positions: Option<Vec<u32>>, // [T || H || W] when present
+    pub image_grid_thw: Option<(u32, u32, u32)>,
 }
 
 #[derive(Debug)]

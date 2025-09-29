@@ -5,18 +5,27 @@ use text_embeddings_backend_core::{Batch, ModelType};
 
 use crate::layers::HiddenAct;
 use crate::models::{Model, Qwen2Config};
+use crate::vision::qwen2_vl::Qwen2VlVisionEncoder;
 
 #[cfg(feature = "cuda")]
 use crate::models::FlashQwen2Model;
 
 trait JinaBackbone: Model {
     fn encode_hidden(&self, batch: &Batch) -> Result<(Tensor, Tensor)>;
+    fn embed_only(&self, batch: &Batch) -> Result<(Tensor, Tensor, Tensor, Tensor, usize)>;
+    fn run_layers(&self, hidden: Tensor, cu_seqlens: &Tensor, cos: &Tensor, sin: &Tensor, max_s: usize) -> Result<Tensor>;
 }
 
 #[cfg(feature = "cuda")]
 impl JinaBackbone for FlashQwen2Model {
     fn encode_hidden(&self, batch: &Batch) -> Result<(Tensor, Tensor)> {
         self.encode_hidden(batch)
+    }
+    fn embed_only(&self, batch: &Batch) -> Result<(Tensor, Tensor, Tensor, Tensor, usize)> {
+        self.embed_only(batch)
+    }
+    fn run_layers(&self, hidden: Tensor, cu_seqlens: &Tensor, cos: &Tensor, sin: &Tensor, max_s: usize) -> Result<Tensor> {
+        self.run_layers(hidden, cu_seqlens, cos, sin, max_s)
     }
 }
 
@@ -39,6 +48,10 @@ pub struct JinaVLConfig {
     pub hidden_act: HiddenAct,
     #[serde(default)]
     pub use_flash_attn: bool,
+    #[serde(default)]
+    pub rope_scaling: Option<crate::models::qwen2::Qwen2RopeScaling>,
+    #[serde(default)]
+    pub vision_config: Option<crate::vision::qwen2_vl::VisionConfig>,
     // Vision-specific configurations
     pub vision_start_token_id: Option<u32>,
     pub vision_end_token_id: Option<u32>,
@@ -64,6 +77,8 @@ impl From<Qwen2Config> for JinaVLConfig {
             attention_dropout: 0.0, // Default value
             hidden_act: config.hidden_act,
             use_flash_attn: false, // Default value
+            rope_scaling: config.rope_scaling,
+            vision_config: None,
             // Default vision token IDs for Jina VL
             vision_start_token_id: Some(151652),
             vision_end_token_id: Some(151653),
@@ -79,6 +94,7 @@ pub struct JinaVLModel {
     device: Device,
     #[allow(dead_code)]
     dtype: DType,
+    vision: Option<Qwen2VlVisionEncoder>,
 }
 
 impl JinaVLModel {
@@ -99,6 +115,7 @@ impl JinaVLModel {
             rms_norm_eps: config.rms_norm_eps as f32,
             rope_theta: config.rope_theta.unwrap_or(10000.0) as f32,
             hidden_act: config.hidden_act.clone(),
+            rope_scaling: config.rope_scaling.clone(),
         };
 
         // Load the underlying Qwen2 model
@@ -106,14 +123,21 @@ impl JinaVLModel {
         {
             let device = _vb.device().clone();
             let dtype = _vb.dtype();
+            let vb_backbone = _vb.clone();
             let qwen2_model: Box<dyn JinaBackbone + Send> =
-                Box::new(FlashQwen2Model::load(_vb, &_qwen2_config, _model_type)?);
+                Box::new(FlashQwen2Model::load(vb_backbone, &_qwen2_config, _model_type)?);
+
+            let vision = match config.vision_config.clone() {
+                Some(vc) => Some(Qwen2VlVisionEncoder::load(&_vb, vc, &device, dtype)?),
+                None => None,
+            };
 
             Ok(Self {
                 qwen2_model,
                 config: config.clone(),
                 device,
                 dtype,
+                vision,
             })
         }
 
@@ -206,7 +230,56 @@ impl Model for JinaVLModel {
         let has_pooling_requests = !batch.pooled_indices.is_empty();
         let has_raw_requests = !batch.raw_indices.is_empty();
 
-        let (outputs, _) = self.qwen2_model.encode_hidden(&batch)?;
+        // Obtain initial token embeddings + rotary tensors
+        let (mut hidden, cu_seqlens, cos, sin, max_s) = self.qwen2_model.embed_only(&batch)?;
+
+        // Replace image token embeddings with vision features if available
+        if let Some(vision) = &self.vision {
+            const VISION_START_ID: u32 = 151652;
+            const VISION_END_ID: u32 = 151653;
+
+            // Find spans
+            let ids = &batch.input_ids;
+            let mut i = 0usize;
+            while i < ids.len() {
+                if ids[i] == VISION_START_ID {
+                    // find end
+                    let mut j = i + 1;
+                    while j < ids.len() && ids[j] != VISION_END_ID { j += 1; }
+                    if j <= ids.len() && j > i + 1 {
+                        let span_start = i + 1;
+                        let span_end = j; // exclusive of end token
+                        let span_len = span_end - span_start;
+                        // naive grid inference: assume 1xHxW where H*W = span_len
+                        // Prefer grid from batch if present
+                        let (t, h, w) = if let Some((tt, hh, ww)) = batch.image_grid_thw {
+                            (tt as usize, hh as usize, ww as usize)
+                        } else {
+                            let t = 1usize;
+                            // pick square-ish H,W
+                            let mut hh = (span_len as f64).sqrt() as usize;
+                            if hh == 0 { hh = 1; }
+                            while span_len % hh != 0 { hh -= 1; if hh == 0 { hh = 1; break; } }
+                            let ww = span_len / hh;
+                            (t, hh, ww)
+                        };
+                        let out_hidden = self.config.hidden_size;
+                        let feats = vision.features_for_grid(t, h, w, out_hidden)?;
+
+                        // Slice hidden: [0..span_start], [span_start..span_end], [span_end..]
+                        let before = if span_start > 0 { hidden.narrow(0, 0, span_start)? } else { Tensor::zeros((0, out_hidden), hidden.dtype(), hidden.device())? };
+                        let after = if span_end < hidden.dims()[0] { hidden.narrow(0, span_end, hidden.dims()[0] - span_end)? } else { Tensor::zeros((0, out_hidden), hidden.dtype(), hidden.device())? };
+                        hidden = Tensor::cat(&[&before, &feats, &after], 0)?;
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+
+        // Run transformer layers + norm
+        let outputs = self.qwen2_model.run_layers(hidden, &cu_seqlens, &cos, &sin, max_s)?;
 
         let pooled_embeddings = if has_pooling_requests {
             self.vision_aware_pooling(&outputs, &batch)?

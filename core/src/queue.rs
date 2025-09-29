@@ -129,10 +129,19 @@ fn queue_blocking_task(
                 let mut cu_seq_lengths = Vec::with_capacity(capacity);
                 cu_seq_lengths.push(0);
 
+                // Accumulate mRoPE positions per axis if present
+                let mut t_positions: Vec<u32> = Vec::new();
+                let mut h_positions: Vec<u32> = Vec::new();
+                let mut w_positions: Vec<u32> = Vec::new();
+                let mut any_mrope = false;
+
                 let mut current_tokens = 0;
                 let mut max_length = 0;
 
                 let mut entry_index = 0;
+
+                // Track a unified image grid if all entries agree
+                let mut batch_grid: Option<(u32, u32, u32)> = None;
 
                 while let Some(entry) = entries.pop_front() {
                     // Filter entries where the response receiver was dropped (== entries where the request
@@ -166,7 +175,34 @@ fn queue_blocking_task(
 
                     input_ids.extend(entry.encoding.input_ids);
                     token_type_ids.extend(entry.encoding.token_type_ids);
-                    position_ids.extend(entry.encoding.position_ids);
+                    position_ids.extend(entry.encoding.position_ids.clone());
+
+                    // Merge mRoPE positions: [T||H||W] slices per entry
+                    if let Some(ref mpos) = entry.encoding.mrope_positions {
+                        let len = entry_tokens;
+                        if mpos.len() == len * 3 {
+                            t_positions.extend_from_slice(&mpos[0..len]);
+                            h_positions.extend_from_slice(&mpos[len..2 * len]);
+                            w_positions.extend_from_slice(&mpos[2 * len..3 * len]);
+                            any_mrope = true;
+                        }
+                    } else {
+                        // Fallback for entries without explicit mRoPE: duplicate 1D positions if any mRoPE present in batch
+                        // We always extend here; final emission is gated by any_mrope
+                        let base = &entry.encoding.position_ids;
+                        t_positions.extend_from_slice(base);
+                        h_positions.extend_from_slice(base);
+                        w_positions.extend_from_slice(base);
+                    }
+
+                    // Merge image grid if present and consistent
+                    if let Some(g) = entry.encoding.image_grid_thw {
+                        batch_grid = match batch_grid {
+                            None => Some(g),
+                            Some(prev) if prev == g => Some(prev),
+                            Some(_) => None, // inconsistent grids; unset
+                        };
+                    }
 
                     current_tokens += entry_tokens;
                     metadata.push(entry.metadata);
@@ -183,6 +219,15 @@ fn queue_blocking_task(
                 let next_batch = if metadata.is_empty() {
                     None
                 } else {
+                    let mrope_positions = if any_mrope {
+                        let mut m = Vec::with_capacity((t_positions.len() + h_positions.len() + w_positions.len()) as usize);
+                        m.extend_from_slice(&t_positions);
+                        m.extend_from_slice(&h_positions);
+                        m.extend_from_slice(&w_positions);
+                        Some(m)
+                    } else {
+                        None
+                    };
                     Some((
                         metadata,
                         Batch {
@@ -193,6 +238,8 @@ fn queue_blocking_task(
                             max_length,
                             pooled_indices,
                             raw_indices,
+                            mrope_positions,
+                            image_grid_thw: batch_grid,
                         },
                     ))
                 };

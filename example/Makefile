@@ -24,12 +24,14 @@ help:
 	@echo "  clean          - Clean up generated files"
 	@echo ""
 	@echo "🖼️ Jina VL Multimodal Embedding:"
-	@echo "  test-jina-vl      - Run integration tests"
-	@echo "  example-jina-vl   - Run Python examples"
-	@echo "  curl-jina-vl      - Run cURL examples"
-	@echo "  benchmark-jina-vl - Run performance benchmark"
-	@echo "  jina-vl-all       - Run all Jina VL examples"
-	@echo "  help-jina-vl      - Show Jina VL specific help"
+	@echo "  setup-jina-vl        - Setup Jina VL model (requires JINA_MODEL_PATH)"
+	@echo "  setup-jina-vl-python - Setup using Python script"
+	@echo "  test-jina-vl         - Run integration tests"
+	@echo "  example-jina-vl      - Run Python examples"
+	@echo "  curl-jina-vl         - Run cURL examples"
+	@echo "  benchmark-jina-vl    - Run performance benchmark"
+	@echo "  jina-vl-all          - Run all Jina VL examples"
+	@echo "  help-jina-vl         - Show Jina VL specific help"
 	@echo ""
 	@echo "Variables:"
 	@echo "  MODEL          - Model to convert (default: $(MODEL))"
@@ -149,19 +151,45 @@ benchmark-jina-vl:
 	@echo "⚡ Running Jina VL benchmark..."
 	python benchmark_jina_vl.py
 
+setup-jina-vl:
+	@echo "🔧 Setting up Jina VL model..."
+	@if [ -z "$(JINA_MODEL_PATH)" ]; then \
+		echo "❌ Please set JINA_MODEL_PATH variable:"; \
+		echo "  make setup-jina-vl JINA_MODEL_PATH=/data/jina-embeddings-v4-vllm-retrieval"; \
+		exit 1; \
+	fi
+	chmod +x jina_vl_curl_examples.sh
+	chmod +x quick_fix_jina_vl.sh
+	./quick_fix_jina_vl.sh $(JINA_MODEL_PATH)
+
+setup-jina-vl-python:
+	@echo "🔧 Setting up Jina VL model with Python..."
+	@if [ -z "$(JINA_MODEL_PATH)" ]; then \
+		echo "❌ Please set JINA_MODEL_PATH variable:"; \
+		echo "  make setup-jina-vl-python JINA_MODEL_PATH=/data/jina-embeddings-v4-vllm-retrieval"; \
+		exit 1; \
+	fi
+	python setup_jina_vl_model.py --model-path $(JINA_MODEL_PATH)
+
 jina-vl-all: test-jina-vl example-jina-vl curl-jina-vl
 	@echo "🎉 All Jina VL examples completed!"
 
 help-jina-vl:
 	@echo "Jina VL Multimodal Embedding Targets:"
-	@echo "  test-jina-vl      - Run integration tests"
-	@echo "  example-jina-vl   - Run Python examples"
-	@echo "  curl-jina-vl      - Run cURL examples"
-	@echo "  benchmark-jina-vl - Run performance benchmark"
-	@echo "  jina-vl-all       - Run all Jina VL examples"
+	@echo "  setup-jina-vl        - Setup Jina VL model (requires JINA_MODEL_PATH)"
+	@echo "  setup-jina-vl-python - Setup using Python script (requires JINA_MODEL_PATH)"
+	@echo "  test-jina-vl         - Run integration tests"
+	@echo "  example-jina-vl      - Run Python examples"
+	@echo "  curl-jina-vl         - Run cURL examples"
+	@echo "  benchmark-jina-vl    - Run performance benchmark"
+	@echo "  jina-vl-all          - Run all Jina VL examples"
 	@echo ""
-	@echo "Prerequisites:"
-	@echo "  Start the service with:"
+	@echo "Setup Examples:"
+	@echo "  make setup-jina-vl JINA_MODEL_PATH=/data/jina-embeddings-v4-vllm-retrieval"
+	@echo "  make setup-jina-vl-python JINA_MODEL_PATH=/data/jina-embeddings-v4-vllm-retrieval"
+	@echo ""
+	@echo "After setup, start the service with:"
 	@echo "  text-embeddings-router --model-id /data/jina-embeddings-v4-vllm-retrieval \\"
-	@echo "                        --json-output --payload-limit 2000000 \\"
-	@echo "                        --auto-truncate --max-client-batch-size 200"
+	@echo "                        --pooling lasttoken --json-output \\"
+	@echo "                        --payload-limit 2000000 --auto-truncate \\"
+	@echo "                        --max-client-batch-size 200"

@@ -2,6 +2,16 @@ use crate::layers::HiddenAct;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Qwen2RopeScaling {
+    #[serde(default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub mrope_section: Option<Vec<usize>>, // When present, indicates multi-segment RoPE
+    #[serde(default)]
+    pub factor: Option<f32>, // Optional NTK-like scaling factor
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Qwen2Config {
     pub vocab_size: usize,
     pub hidden_size: usize,
@@ -15,4 +25,6 @@ pub struct Qwen2Config {
     pub rope_theta: f32,
     pub sliding_window: Option<usize>,
     pub use_sliding_window: bool,
+    #[serde(default)]
+    pub rope_scaling: Option<Qwen2RopeScaling>,
 }

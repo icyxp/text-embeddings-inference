@@ -5,6 +5,7 @@ mod compute_cap;
 mod flash_attn;
 mod layers;
 mod models;
+pub mod vision;
 
 #[cfg(feature = "cuda")]
 use crate::compute_cap::{

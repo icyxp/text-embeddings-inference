@@ -317,10 +317,16 @@ pub(crate) enum Input {
 #[derive(Deserialize, ToSchema, Debug)]
 pub(crate) struct MultiModalInput {
     /// Text content
+    #[schema(example = "Describe the image.")]
     pub text: String,
     /// Base64 encoded image (optional)
+    #[schema(
+        nullable = true,
+        example = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChAI9jU77zgAAAABJRU5ErkJggg"
+    )]
     pub image: Option<String>,
     /// Input type (query, passage, etc.)
+    #[schema(nullable = true, example = "passage")]
     pub input_type: Option<String>,
 }
 
