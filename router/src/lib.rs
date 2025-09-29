@@ -146,7 +146,7 @@ pub async fn run(
     tokenizer.with_padding(None);
     // Qwen2 updates the post processor manually instead of into the tokenizer.json...
     // https://huggingface.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct/blob/main/tokenization_qwen.py#L246
-    if config.model_type == "qwen2" {
+    if matches!(config.model_type.as_str(), "qwen2" | "jina_vl") {
         let template = TemplateProcessing::builder()
             .try_single("$A:0 <|endoftext|>:0")
             .unwrap()

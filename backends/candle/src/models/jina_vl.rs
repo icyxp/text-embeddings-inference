@@ -143,19 +143,19 @@ impl JinaVLModel {
             }
         }
 
+        let seq_embeddings = embeddings.to_dtype(DType::F32)?;
+
         let pooled = if let (Some(start), Some(end)) = (vision_start_pos, vision_end_pos) {
             if start < end && end < token_ids.len() {
                 let len = end - start + 1;
-                embeddings.narrow(0, start, len)?.mean(0)?
+                seq_embeddings.narrow(0, start, len)?.mean(0)?
             } else {
-                let seq_len = embeddings.dim(0)?;
-                embeddings.i(seq_len - 1)?
+                let seq_len = seq_embeddings.dim(0)?;
+                seq_embeddings.i(seq_len - 1)?
             }
         } else {
-            embeddings.mean(0)?
+            seq_embeddings.mean(0)?
         };
-
-        let pooled = pooled.to_dtype(DType::F32)?;
 
         let norm = pooled.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
         let denom = (&norm + 1e-12f64)?;
