@@ -24,22 +24,25 @@ class VisionPooler:
     def pool_vision_tokens(self, hidden_states: torch.Tensor, token_ids: torch.Tensor) -> torch.Tensor:
         """
         Pool vision tokens from hidden states based on vision start/end tokens
+        This implementation matches the vLLM VisionPooler behavior
         """
         # Find vision token positions
         vision_start_positions = (token_ids == self.vision_start_token_id).nonzero(as_tuple=True)[0]
         vision_end_positions = (token_ids == self.vision_end_token_id).nonzero(as_tuple=True)[0]
         
         if len(vision_start_positions) > 0 and len(vision_end_positions) > 0:
-            # Use the last vision token range
+            # Use the last vision token range (matching vLLM behavior)
             start_pos = vision_start_positions[-1].item()
             end_pos = vision_end_positions[-1].item()
             
             # Extract vision embeddings and pool them (mean pooling)
+            # This matches the vLLM implementation: mean pooling between start and end tokens
             vision_embeddings = hidden_states[start_pos:end_pos + 1]
             pooled_embedding = vision_embeddings.mean(dim=0, dtype=torch.float32)
         else:
-            # Fallback to mean pooling of all tokens if vision tokens not found
-            pooled_embedding = hidden_states.mean(dim=0, dtype=torch.float32)
+            # For text-only inputs, use last token pooling (matching Jina behavior)
+            # This is different from simple mean pooling
+            pooled_embedding = hidden_states[-1].to(torch.float32)
         
         return pooled_embedding
 
@@ -153,18 +156,13 @@ class JinaVLModel(Model):
                     # Extract embedding for this sequence
                     sequence_hidden = hidden_states[0]  # Remove batch dimension
                     
-                    # Check if this is a multimodal input with vision tokens
-                    if (self.vision_start_token_id in input_ids and 
-                        self.vision_end_token_id in input_ids):
-                        # Use vision-aware pooling
-                        embedding = self.vision_pooler.pool_vision_tokens(
-                            sequence_hidden, input_ids
-                        )
-                    else:
-                        # Use last token pooling for text-only inputs
-                        embedding = sequence_hidden[-1].to(torch.float32)
+                    # Always use vision-aware pooling for Jina VL model
+                    # This matches the vLLM implementation
+                    embedding = self.vision_pooler.pool_vision_tokens(
+                        sequence_hidden, input_ids
+                    )
                     
-                    # Normalize embedding
+                    # Normalize embedding (important for consistency with vLLM)
                     embedding = F.normalize(embedding, p=2, dim=-1)
                     embeddings.append(Embedding(values=embedding.cpu().tolist()))
                     

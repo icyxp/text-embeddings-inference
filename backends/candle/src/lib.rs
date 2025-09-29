@@ -12,14 +12,14 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, JinaBertModel, JinaCodeBertModel, MPNetConfig, MPNetModel, MistralConfig,
+    GTEConfig, GTEModel, JinaBertModel, JinaCodeBertModel, JinaVLConfig, JinaVLModel, MPNetConfig, MPNetModel, MistralConfig,
     Model, ModernBertConfig, ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config,
     Qwen3Config, Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
-    FlashJinaCodeBertModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
+    FlashJinaCodeBertModel, FlashJinaVLModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
     FlashQwen2Model, FlashQwen3Model,
 };
 use anyhow::Context;
@@ -109,6 +109,9 @@ enum Config {
     #[serde(rename = "qwen2_5_vl")]
     #[allow(dead_code)]
     Qwen25Vl(Qwen2Config),
+    #[serde(rename = "jina_vl")]
+    #[allow(dead_code)]
+    JinaVl(JinaVLConfig),
     #[serde(rename = "mpnet")]
     MPNet(MPNetConfig),
     #[serde(rename(deserialize = "modernbert"))]
@@ -289,6 +292,10 @@ impl CandleBackend {
                 "Qwen2.5-VL is only supported on Cuda devices in fp16 with flash attention enabled"
                     .to_string(),
             )),
+            (Config::JinaVl(config), Device::Cpu | Device::Metal(_)) => {
+                tracing::info!("Starting Jina VL model on {:?}", device);
+                Ok(Box::new(JinaVLModel::load(vb, &config, model_type).s()?))
+            }
             (Config::MPNet(config), _) => {
                 tracing::info!("Starting MPNet model on {:?}", device);
                 Ok(Box::new(MPNetModel::load(vb, &config, model_type).s()?))
@@ -487,6 +494,13 @@ impl CandleBackend {
                 // Use FlashQwen2 as Qwen2.5-VL is based on Qwen2 architecture
                 Ok(Box::new(
                     FlashQwen2Model::load(vb, &config, model_type).s()?,
+                ))
+            }
+            #[cfg(feature = "cuda")]
+            (Config::JinaVl(config), Device::Cuda(_)) => {
+                tracing::info!("Starting FlashJina VL model on {:?}", device);
+                Ok(Box::new(
+                    FlashJinaVLModel::load(vb, &config, model_type).s()?,
                 ))
             }
         };

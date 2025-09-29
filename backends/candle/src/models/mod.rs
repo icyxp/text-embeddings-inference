@@ -9,6 +9,7 @@ mod dense;
 mod distilbert;
 mod jina;
 mod jina_code;
+mod jina_vl;
 mod mistral;
 mod modernbert;
 mod nomic;
@@ -43,6 +44,9 @@ mod flash_qwen3;
 #[cfg(feature = "cuda")]
 mod flash_modernbert;
 
+#[cfg(feature = "cuda")]
+mod flash_jina_vl;
+
 mod gte;
 mod mpnet;
 mod qwen2;
@@ -56,6 +60,7 @@ pub use distilbert::{DistilBertConfig, DistilBertModel};
 pub use gte::{GTEClassificationHead, GTEConfig, GTEModel, GTEMLP};
 pub use jina::JinaBertModel;
 pub use jina_code::JinaCodeBertModel;
+pub use jina_vl::{JinaVLConfig, JinaVLModel};
 pub use mistral::MistralConfig;
 pub use modernbert::{ModernBertConfig, ModernBertModel};
 pub use mpnet::{MPNetConfig, MPNetModel};
@@ -93,6 +98,9 @@ pub use flash_qwen3::FlashQwen3Model;
 
 #[cfg(feature = "cuda")]
 pub use flash_modernbert::FlashModernBertModel;
+
+#[cfg(feature = "cuda")]
+pub use jina_vl::FlashJinaVLModel;
 
 pub(crate) trait Model {
     fn is_padded(&self) -> bool;

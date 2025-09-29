@@ -67,6 +67,8 @@ pub enum Pool {
     Splade,
     /// Select the last token as embedding
     LastToken,
+    /// Apply vision-aware pooling for multimodal models
+    Vision,
 }
 
 impl fmt::Display for Pool {
@@ -76,6 +78,7 @@ impl fmt::Display for Pool {
             Pool::Mean => write!(f, "mean"),
             Pool::Splade => write!(f, "splade"),
             Pool::LastToken => write!(f, "last_token"),
+            Pool::Vision => write!(f, "vision"),
         }
     }
 }
