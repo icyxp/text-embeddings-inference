@@ -679,6 +679,11 @@ impl DistilBertModel {
 
                     relu_log.max(1)?
                 }
+                Pool::Vision => {
+                    // Vision pooling is not supported for this model
+                    // Fall back to CLS token pooling
+                    outputs.i((.., 0))?
+                }
             };
             Some(pooled_embeddings)
         } else {

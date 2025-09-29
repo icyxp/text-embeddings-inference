@@ -709,6 +709,16 @@ impl Qwen3Model {
                 Pool::Splade => {
                     unreachable!("Splade is not supported for Qwen3");
                 }
+                Pool::Vision => {
+                    // Vision pooling is not supported for this model
+                    // Fall back to mean pooling
+                    let input_lengths_tensor = Tensor::from_vec(
+                        input_lengths.iter().map(|&x| x as f32).collect::<Vec<f32>>(),
+                        input_lengths.len(),
+                        &outputs.device()
+                    )?;
+                    Some(outputs.sum(1)?.broadcast_div(&input_lengths_tensor.unsqueeze(1)?)?)
+                }
             }
         } else {
             None

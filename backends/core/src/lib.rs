@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::fmt;
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Batch {
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,

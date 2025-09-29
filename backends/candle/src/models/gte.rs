@@ -651,6 +651,11 @@ impl GTEModel {
                     (outputs.sum(1)?.broadcast_div(&input_lengths))?
                 }
                 Pool::Splade => unreachable!(),
+                Pool::Vision => {
+                    // Vision pooling is not supported for this model
+                    // Fall back to CLS token pooling
+                    outputs.i((.., 0))?
+                }
             };
             Some(pooled_embeddings)
         } else {

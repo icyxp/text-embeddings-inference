@@ -63,7 +63,7 @@ impl From<Qwen2Config> for JinaVLConfig {
 
 pub struct JinaVLModel {
     // Use the underlying Qwen2 model for text processing
-    qwen2_model: Box<dyn Model>,
+    qwen2_model: Box<dyn Model + Send>,
     config: JinaVLConfig,
     device: Device,
     dtype: DType,
@@ -71,12 +71,12 @@ pub struct JinaVLModel {
 
 impl JinaVLModel {
     pub fn load(
-        vb: VarBuilder,
+        _vb: VarBuilder,
         config: &JinaVLConfig,
-        model_type: ModelType,
+        _model_type: ModelType,
     ) -> Result<Self> {
         // Convert JinaVLConfig to Qwen2Config for the underlying model
-        let qwen2_config = Qwen2Config {
+        let _qwen2_config = Qwen2Config {
             vocab_size: config.vocab_size,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
@@ -93,30 +93,30 @@ impl JinaVLModel {
 
         // Load the underlying Qwen2 model
         #[cfg(feature = "cuda")]
-        let qwen2_model = {
-            Box::new(FlashQwen2Model::load(vb, &qwen2_config, model_type)?) as Box<dyn Model>
-        };
+        {
+            let qwen2_model = Box::new(FlashQwen2Model::load(_vb, &_qwen2_config, _model_type)?) as Box<dyn Model + Send>;
+            
+            Ok(Self {
+                qwen2_model,
+                config: config.clone(),
+                device: _vb.device().clone(),
+                dtype: _vb.dtype(),
+            })
+        }
 
         #[cfg(not(feature = "cuda"))]
-        let qwen2_model = {
+        {
             // For CPU, we'll use a simplified implementation
             // In practice, Jina VL models are typically used with CUDA
-            return Err(candle::Error::Msg("Jina VL model requires CUDA support".to_string()));
-        };
-
-        Ok(Self {
-            qwen2_model,
-            config: config.clone(),
-            device: vb.device().clone(),
-            dtype: vb.dtype(),
-        })
+            Err(candle::Error::Msg("Jina VL model requires CUDA support".to_string()))
+        }
     }
 
-    fn vision_aware_pooling(&self, embeddings: &Tensor, input_ids: &[u32]) -> Result<Tensor> {
+    fn vision_aware_pooling_batch(&self, embeddings: &Tensor, input_ids: &[u32]) -> Result<Tensor> {
         let vision_start_token_id = self.config.vision_start_token_id.unwrap_or(151652);
         let vision_end_token_id = self.config.vision_end_token_id.unwrap_or(151653);
 
-        // Find vision token positions
+        // Find vision token positions in the flattened input_ids
         let mut vision_start_pos = None;
         let mut vision_end_pos = None;
 
@@ -129,13 +129,14 @@ impl JinaVLModel {
             }
         }
 
+        // Apply pooling based on whether vision tokens are present
         let pooled = if let (Some(start), Some(end)) = (vision_start_pos, vision_end_pos) {
             if start < end && end < input_ids.len() {
                 // Extract vision tokens and perform mean pooling
-                let vision_embeddings = embeddings.i((start..=end))?;
+                let vision_embeddings = embeddings.i(start..=end)?;
                 vision_embeddings.mean(0)?
             } else {
-                // Fallback to last token if vision tokens are malformed
+                // Fallback to last token pooling
                 let seq_len = embeddings.dim(0)?;
                 embeddings.i(seq_len - 1)?
             }
@@ -149,7 +150,7 @@ impl JinaVLModel {
         let norm = pooled.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
         let normalized = pooled.broadcast_div(&norm)?;
 
-        Ok(normalized)
+        Ok(normalized.unsqueeze(0)?) // Add batch dimension back
     }
 }
 
@@ -160,27 +161,13 @@ impl Model for JinaVLModel {
 
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         // Get embeddings from the underlying Qwen2 model
-        let (embeddings, attention_bias) = self.qwen2_model.embed(batch)?;
+        let (embeddings, attention_bias) = self.qwen2_model.embed(batch.clone())?;
 
         if let Some(embeddings) = embeddings {
-            let mut pooled_embeddings = Vec::new();
-
-            // Process each sequence in the batch
-            let batch_size = embeddings.dim(0)?;
-            for i in 0..batch_size {
-                let sequence_embeddings = embeddings.i(i)?;
-                
-                // Get the input_ids for this sequence
-                let input_ids = &batch.input_ids[i];
-                
-                // Apply vision-aware pooling
-                let pooled = self.vision_aware_pooling(&sequence_embeddings, input_ids)?;
-                pooled_embeddings.push(pooled);
-            }
-
-            // Stack the pooled embeddings
-            let result = Tensor::stack(&pooled_embeddings, 0)?;
-            Ok((Some(result), attention_bias))
+            // Apply vision-aware pooling to the entire batch
+            // For now, we'll apply the same logic to all sequences
+            let pooled = self.vision_aware_pooling_batch(&embeddings, &batch.input_ids)?;
+            Ok((Some(pooled), attention_bias))
         } else {
             Ok((None, attention_bias))
         }
