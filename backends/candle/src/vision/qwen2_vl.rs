@@ -21,6 +21,7 @@ pub struct Qwen2VlVisionEncoder {
     pub dtype: DType,
     pos_table: Option<Tensor>,
     out_proj: Option<Linear>,
+    patch_proj: Option<Linear>,
     blocks: Vec<VisionBlock>,
     vision_hidden: usize,
 }
@@ -145,7 +146,13 @@ impl Qwen2VlVisionEncoder {
                 Err(_) => break,
             }
         }
-        Ok(Self { config, device: device.clone(), dtype, pos_table: None, out_proj, blocks, vision_hidden: hidden })
+        // Try to load patch projection if present
+        let patch_proj = if vb.contains_tensor("visual.patch_embed.proj.weight") {
+            let w = vb.pp("visual.patch_embed.proj").get((hidden, hidden), "weight")?;
+            Some(Linear::new(w, None, None))
+        } else { None };
+
+        Ok(Self { config, device: device.clone(), dtype, pos_table: None, out_proj, patch_proj, blocks, vision_hidden: hidden })
     }
 
     /// Produce deterministic positional features for a T x H x W grid.
@@ -221,6 +228,7 @@ impl Qwen2VlVisionEncoder {
         }
         // If vision blocks exist, map to hidden dim, run blocks, then map to out_hidden
         let mut feat = feat;
+        if let Some(ref patch) = self.patch_proj { feat = patch.forward(&feat)?; }
         if !self.blocks.is_empty() {
             // adjust to vision hidden size
             let d = feat.dim(1)?;

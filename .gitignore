@@ -4,3 +4,7 @@ data/
 __pycache__/
 jina-embeddings-v4-vllm-retrieval
 vllm/
+example/
+fix_*.py
+test/
+*.md

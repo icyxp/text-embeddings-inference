@@ -348,51 +348,30 @@ impl FlashQwen2Model {
             if let Some(ref mpos) = batch.mrope_positions {
                 let tokens = position_ids.dims()[0];
                 if mpos.len() == tokens * 3 {
-                        let tpos = Tensor::from_vec(
-                            mpos[0..tokens].to_vec(),
-                            tokens,
-                            &self.device,
-                        )?;
-                        let hpos = Tensor::from_vec(
-                            mpos[tokens..2 * tokens].to_vec(),
-                            tokens,
-                            &self.device,
-                        )?;
-                        let wpos = Tensor::from_vec(
-                            mpos[2 * tokens..3 * tokens].to_vec(),
-                            tokens,
-                            &self.device,
-                        )?;
-                        let cos_t = self.cos_cache.index_select(&tpos, 0)?;
-                        let cos_h = self.cos_cache.index_select(&hpos, 0)?;
-                        let cos_w = self.cos_cache.index_select(&wpos, 0)?;
-                        let sin_t = self.sin_cache.index_select(&tpos, 0)?;
-                        let sin_h = self.sin_cache.index_select(&hpos, 0)?;
-                        let sin_w = self.sin_cache.index_select(&wpos, 0)?;
+                    let tpos = Tensor::from_vec(mpos[0..tokens].to_vec(), tokens, &self.device)?;
+                    let hpos = Tensor::from_vec(mpos[tokens..2 * tokens].to_vec(), tokens, &self.device)?;
+                    let wpos = Tensor::from_vec(mpos[2 * tokens..3 * tokens].to_vec(), tokens, &self.device)?;
+                    let cos_t = self.cos_cache.index_select(&tpos, 0)?;
+                    let cos_h = self.cos_cache.index_select(&hpos, 0)?;
+                    let cos_w = self.cos_cache.index_select(&wpos, 0)?;
+                    let sin_t = self.sin_cache.index_select(&tpos, 0)?;
+                    let sin_h = self.sin_cache.index_select(&hpos, 0)?;
+                    let sin_w = self.sin_cache.index_select(&wpos, 0)?;
 
-                        // Recompose along rotary dimension: [t_segment | h_segment | w_segment]
-                        let mut start = 0;
-                        let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
-                        // Expect 3 sections corresponding to T/H/W
-                        for (i, seg) in sections.iter().enumerate() {
-                            let len = *seg;
-                            let src_c = match i {
-                                0 => &cos_t,
-                                1 => &cos_h,
-                                _ => &cos_w,
-                            };
-                            let src_s = match i {
-                                0 => &sin_t,
-                                1 => &sin_h,
-                                _ => &sin_w,
-                            };
-                            cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
-                            sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
-                            start += len;
-                        }
-                        cos = Tensor::cat(&cos_parts, candle::D::Minus1)?;
-                        sin = Tensor::cat(&sin_parts, candle::D::Minus1)?;
+                    // Recompose along rotary dimension: [t_segment | h_segment | w_segment]
+                    let mut start = 0;
+                    let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
+                    // Expect 3 sections corresponding to T/H/W
+                    for (i, seg) in sections.iter().enumerate() {
+                        let len = *seg;
+                        let src_c = match i { 0 => &cos_t, 1 => &cos_h, _ => &cos_w };
+                        let src_s = match i { 0 => &sin_t, 1 => &sin_h, _ => &sin_w };
+                        cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
+                        sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
+                        start += len;
                     }
+                    cos = Tensor::cat(&cos_parts, candle::D::Minus1)?;
+                    sin = Tensor::cat(&sin_parts, candle::D::Minus1)?;
                 }
             } else {
                 // Fallback: use 1D positions for all axes (text-only approximation)
@@ -409,16 +388,8 @@ impl FlashQwen2Model {
                 let (mut cos_parts, mut sin_parts) = (Vec::new(), Vec::new());
                 for (i, seg) in sections.iter().enumerate() {
                     let len = *seg;
-                    let src_c = match i {
-                        0 => &cos_t,
-                        1 => &cos_h,
-                        _ => &cos_w,
-                    };
-                    let src_s = match i {
-                        0 => &sin_t,
-                        1 => &sin_h,
-                        _ => &sin_w,
-                    };
+                    let src_c = match i { 0 => &cos_t, 1 => &cos_h, _ => &cos_w };
+                    let src_s = match i { 0 => &sin_t, 1 => &sin_h, _ => &sin_w };
                     cos_parts.push(src_c.narrow(candle::D::Minus1, start, len)?);
                     sin_parts.push(src_s.narrow(candle::D::Minus1, start, len)?);
                     start += len;

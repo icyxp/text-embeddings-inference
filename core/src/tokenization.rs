@@ -416,10 +416,10 @@ fn encode_input(
             if let Some(start_idx) = ids.iter().position(|&v| v == VISION_START_ID) {
                 if let Some(rel_end) = ids.iter().skip(start_idx + 1).position(|&v| v == VISION_END_ID) {
                     let end_idx = start_idx + 1 + rel_end;
-                    // Default grid 1x8x8 => 64 tokens
+                    // Default grid 1x16x16 => 256 tokens (approx Qwen2-VL default with patch/merge)
                     let t = 1u32;
-                    let h = 8u32;
-                    let w = 8u32;
+                    let h = 16u32;
+                    let w = 16u32;
                     let n_tokens = (t * h * w) as usize;
                     image_grid_thw = Some((t as u32, h as u32, w as u32));
 

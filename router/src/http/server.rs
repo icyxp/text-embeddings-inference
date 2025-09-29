@@ -829,7 +829,7 @@ async fn embed_multimodal(
             // Convert multimodal input to text for processing
             // For now, we'll just use the text part and ignore images
             // TODO: Implement proper multimodal processing
-            let text_input = format_multimodal_input(&input);
+            let text_input = format_multimodal_input(&input, &info.0);
             
             let response = infer
                 .embed_pooled(
@@ -898,7 +898,7 @@ async fn embed_multimodal(
 
                 let local_infer = infer.clone();
                 let prompt_name = req.prompt_name.clone();
-                let text_input = format_multimodal_input(&input);
+                let text_input = format_multimodal_input(&input, &info.0);
                 
                 futures.push(async move {
                     let permit = local_infer.acquire_permit().await;
@@ -964,7 +964,7 @@ async fn embed_multimodal(
 }
 
 /// Helper function to format multimodal input for processing
-fn format_multimodal_input(input: &MultiModalInput) -> String {
+fn format_multimodal_input(input: &MultiModalInput, info: &Info) -> String {
     // For now, we'll format the input based on the input_type
     let prefix = match input.input_type.as_deref() {
         Some("query") => "Query: ",
@@ -975,7 +975,27 @@ fn format_multimodal_input(input: &MultiModalInput) -> String {
     // If there's an image, we'll add a placeholder
     // TODO: Implement proper multimodal processing with actual image data
     if input.image.is_some() {
-        format!("<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}{}<|im_end|>\n", prefix, input.text)
+        // Compute an approximate grid based on preprocessor_config.json if available
+        let model_path = &info.model_path;
+        let (h, w) = (|| {
+            let p = std::path::Path::new(model_path).join("preprocessor_config.json");
+            if let Ok(s) = std::fs::read_to_string(p) {
+                #[derive(serde::Deserialize)]
+                struct P { patch_size: Option<u32>, merge_size: Option<u32> }
+                if let Ok(cfg) = serde_json::from_str::<P>(&s) {
+                    let patch = cfg.patch_size.unwrap_or(14);
+                    let merge = cfg.merge_size.unwrap_or(2);
+                    let res: u32 = 448;
+                    let h = (res / patch) / merge;
+                    let w = (res / patch) / merge;
+                    return (h.max(1), w.max(1));
+                }
+            }
+            (16, 16)
+        })();
+        let n = (h * w) as usize;
+        let pads = std::iter::repeat("<|image_pad|>").take(n).collect::<String>();
+        format!("<|im_start|>user\n<|vision_start|>{}<|vision_end|>{}{}<|im_end|>\n", pads, prefix, input.text)
     } else {
         format!("{}{}", prefix, input.text)
     }
@@ -1201,7 +1221,7 @@ async fn embed_all(
 
     let start_time = Instant::now();
 
-    let truncate = req.truncate.unwrap_or(info.auto_truncate);
+            let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
     let (response, metadata) = match req.inputs {
         Input::Single(input) => {
