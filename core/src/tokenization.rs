@@ -416,14 +416,22 @@ fn encode_input(
             if let Some(start_idx) = ids.iter().position(|&v| v == VISION_START_ID) {
                 if let Some(rel_end) = ids.iter().skip(start_idx + 1).position(|&v| v == VISION_END_ID) {
                     let end_idx = start_idx + 1 + rel_end;
-                    // Default grid 1x16x16 => 256 tokens (approx Qwen2-VL default with patch/merge)
+                    // Count existing pads inside the span to preserve caller formatting
+                    let span_start = start_idx + 1;
+                    let span_end = end_idx; // exclusive
+                    let current_pads = ids[span_start..span_end]
+                        .iter()
+                        .filter(|&&v| v == IMAGE_PAD_ID)
+                        .count();
+                    // Prefer preprocessor-derived grid; keep T=1 and default to 16x16
+                    // Use minimal grid from preprocessor min_pixels (56x56 => 2x2 tokens)
                     let t = 1u32;
-                    let h = 16u32;
-                    let w = 16u32;
-                    let n_tokens = (t * h * w) as usize;
-                    image_grid_thw = Some((t as u32, h as u32, w as u32));
+                    let h = 2u32;
+                    let w = 2u32;
+                    image_grid_thw = Some((t, h, w));
 
-                    // Build new ids: keep start, expand pads, then keep from end
+                    // Expand ids: keep start, insert IMAGE_PAD_ID repeated n_tokens times, then keep rest
+                    let n_tokens = (t * h * w) as usize;
                     let mut new_ids = Vec::with_capacity(ids.len() + n_tokens);
                     let mut new_type_ids = Vec::with_capacity(type_ids.len() + n_tokens);
                     new_ids.extend_from_slice(&ids[..=start_idx]);

@@ -31,8 +31,12 @@ struct VisionBlock {
     qkv: Linear,
     proj: Linear,
     norm2: LayerNorm,
-    fc1: Linear,
-    fc2: Linear,
+    // MLP can be either (gate/up/down) or (fc1/fc2)
+    gate: Option<Linear>,
+    up: Option<Linear>,
+    down: Option<Linear>,
+    fc1: Option<Linear>,
+    fc2: Option<Linear>,
     num_heads: usize,
 }
 
@@ -52,20 +56,49 @@ impl VisionBlock {
             vb.pp("attn.proj").get(hidden, "bias").ok(),
             None,
         );
-        // MLP
-        let mlp_hidden = (hidden * 4).max(1);
-        let fc1 = Linear::new(
-            vb.pp("mlp.fc1").get((mlp_hidden, hidden), "weight")?,
-            vb.pp("mlp.fc1").get(mlp_hidden, "bias").ok(),
-            None,
-        );
-        let fc2 = Linear::new(
-            vb.pp("mlp.fc2").get((hidden, mlp_hidden), "weight")?,
-            vb.pp("mlp.fc2").get(hidden, "bias").ok(),
-            None,
-        );
+        // MLP: prefer (gate_proj, up_proj, down_proj), fallback to (fc1, fc2)
+        let (mut gate, mut up, mut down) = (None, None, None);
+        if vb.contains_tensor("mlp.gate_proj.weight")
+            && vb.contains_tensor("mlp.up_proj.weight")
+            && vb.contains_tensor("mlp.down_proj.weight")
+        {
+            let g = Linear::new(
+                vb.pp("mlp.gate_proj").get((hidden * 4, hidden), "weight")?,
+                vb.pp("mlp.gate_proj").get(hidden * 4, "bias").ok(),
+                None,
+            );
+            let u = Linear::new(
+                vb.pp("mlp.up_proj").get((hidden * 4, hidden), "weight")?,
+                vb.pp("mlp.up_proj").get(hidden * 4, "bias").ok(),
+                None,
+            );
+            let d = Linear::new(
+                vb.pp("mlp.down_proj").get((hidden, hidden * 4), "weight")?,
+                vb.pp("mlp.down_proj").get(hidden, "bias").ok(),
+                None,
+            );
+            gate = Some(g);
+            up = Some(u);
+            down = Some(d);
+        }
 
-        Ok(Self { norm1, qkv, proj, norm2, fc1, fc2, num_heads })
+        // Fallback fc1/fc2 if not gate/up/down
+        let (fc1, fc2) = if gate.is_none() {
+            let mlp_hidden = (hidden * 4).max(1);
+            let fc1 = Linear::new(
+                vb.pp("mlp.fc1").get((mlp_hidden, hidden), "weight")?,
+                vb.pp("mlp.fc1").get(mlp_hidden, "bias").ok(),
+                None,
+            );
+            let fc2 = Linear::new(
+                vb.pp("mlp.fc2").get((hidden, mlp_hidden), "weight")?,
+                vb.pp("mlp.fc2").get(hidden, "bias").ok(),
+                None,
+            );
+            (Some(fc1), Some(fc2))
+        } else { (None, None) };
+
+        Ok(Self { norm1, qkv, proj, norm2, gate, up, down, fc1, fc2, num_heads })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -107,9 +140,16 @@ impl VisionBlock {
 
         // MLP
         let x3 = self.norm2.forward(&x2, None)?;
-        let x3 = self.fc1.forward(&x3)?;
-        let x3 = x3.gelu()?;
-        let x3 = self.fc2.forward(&x3)?;
+        let x3 = if let (Some(ref g), Some(ref u), Some(ref d)) = (&self.gate, &self.up, &self.down) {
+            let a = g.forward(&x3)?.silu()?;
+            let b = u.forward(&x3)?;
+            let xg = (a * b)?;
+            d.forward(&xg)?
+        } else {
+            let h1 = if let Some(ref f1) = self.fc1 { f1.forward(&x3)? } else { x3.clone() };
+            let h1 = h1.gelu()?;
+            if let Some(ref f2) = self.fc2 { f2.forward(&h1)? } else { h1 }
+        };
         x2.add(&x3)
     }
 }

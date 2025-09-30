@@ -974,26 +974,53 @@ fn format_multimodal_input(input: &MultiModalInput, info: &Info) -> String {
     
     // If there's an image, we'll add a placeholder
     // TODO: Implement proper multimodal processing with actual image data
-    if input.image.is_some() {
-        // Compute an approximate grid based on preprocessor_config.json if available
+    if let Some(ref image_b64) = input.image {
+        // Try to decode PNG width/height and compute grid count from preprocessor_config
         let model_path = &info.model_path;
-        let (h, w) = (|| {
+        let (patch, merge, min_pix, max_pix) = (|| {
             let p = std::path::Path::new(model_path).join("preprocessor_config.json");
             if let Ok(s) = std::fs::read_to_string(p) {
                 #[derive(serde::Deserialize)]
-                struct P { patch_size: Option<u32>, merge_size: Option<u32> }
+                struct P { patch_size: Option<u32>, merge_size: Option<u32>, min_pixels: Option<u32>, max_pixels: Option<u32> }
                 if let Ok(cfg) = serde_json::from_str::<P>(&s) {
-                    let patch = cfg.patch_size.unwrap_or(14);
-                    let merge = cfg.merge_size.unwrap_or(2);
-                    let res: u32 = 448;
-                    let h = (res / patch) / merge;
-                    let w = (res / patch) / merge;
-                    return (h.max(1), w.max(1));
+                    return (
+                        cfg.patch_size.unwrap_or(14),
+                        cfg.merge_size.unwrap_or(2),
+                        cfg.min_pixels.unwrap_or(3136),
+                        cfg.max_pixels.unwrap_or(12845056),
+                    );
                 }
             }
-            (16, 16)
+            (14, 2, 3136, 12845056)
         })();
-        let n = (h * w) as usize;
+        let dims = (|| {
+            if let Some(pos) = image_b64.find(",") {
+                let data = &image_b64[pos+1..];
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                    // PNG signature: 8 bytes, then IHDR chunk
+                    if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
+                        let w = u32::from_be_bytes([bytes[16],bytes[17],bytes[18],bytes[19]]);
+                        let h = u32::from_be_bytes([bytes[20],bytes[21],bytes[22],bytes[23]]);
+                        return Some((w.max(1), h.max(1)));
+                    }
+                }
+            }
+            None
+        })();
+        let (h_tokens, w_tokens) = if let Some((w, h)) = dims {
+            // scale to clamp pixels within [min_pix, max_pix]
+            let pixels = (w as f64) * (h as f64);
+            let target = (pixels.max(min_pix as f64)).min(max_pix as f64);
+            let s = (target / pixels).sqrt();
+            let new_w = ((w as f64) * s).round() as u32;
+            let new_h = ((h as f64) * s).round() as u32;
+            let tokens_h = ((new_h / patch) / merge).max(1);
+            let tokens_w = ((new_w / patch) / merge).max(1);
+            (tokens_h, tokens_w)
+        } else {
+            (16, 16)
+        };
+        let n = (h_tokens * w_tokens) as usize;
         let pads = std::iter::repeat("<|image_pad|>").take(n).collect::<String>();
         format!("<|im_start|>user\n<|vision_start|>{}<|vision_end|>{}{}<|im_end|>\n", pads, prefix, input.text)
     } else {
