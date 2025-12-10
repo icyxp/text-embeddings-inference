@@ -39,7 +39,7 @@ impl ConfigBasedTemplate {
     pub fn new(template: String) -> Self {
         Self {
             template,
-            default_instruction: "Select only the Documents that are semantically similar to the Query.".to_string(),
+            default_instruction: "Given a web search query, retrieve relevant passages that answer the query".to_string(),
         }
     }
     
@@ -74,7 +74,7 @@ pub struct Qwen3RerankerTemplate {
 impl Qwen3RerankerTemplate {
     pub fn new() -> Self {
         Self {
-            default_instruction: "Select only the Documents that are semantically similar to the Query.".to_string(),
+            default_instruction: "Given a web search query, retrieve relevant passages that answer the query".to_string(),
         }
     }
 }
