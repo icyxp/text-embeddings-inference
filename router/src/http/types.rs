@@ -193,11 +193,25 @@ impl<'__s> ToSchema<'__s> for PredictInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize, ToSchema, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, ToSchema, Eq, Default)]
 pub(crate) enum TruncationDirection {
     Left,
     #[default]
     Right,
+}
+
+impl<'de> Deserialize<'de> for TruncationDirection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.to_lowercase().as_str() {
+            "left" => Ok(TruncationDirection::Left),
+            "right" => Ok(TruncationDirection::Right),
+            _ => Err(de::Error::unknown_variant(&s, &["left", "right", "Left", "Right"])),
+        }
+    }
 }
 
 impl From<TruncationDirection> for tokenizers::TruncationDirection {
@@ -258,7 +272,7 @@ pub(crate) struct RerankRequest {
     /// Custom instruction for reranking (e.g., "Select only semantically similar documents")
     /// Used with models that support templated prompts like Qwen3 rerankers
     #[serde(default)]
-    #[schema(default = "null", example = "Select only the Documents that are semantically similar to the Query.", nullable = true)]
+    #[schema(default = "null", example = "Given a web search query, retrieve relevant passages that answer the query", nullable = true)]
     pub instruction: Option<String>,
     /// Whether to use the model's chat template for formatting. 
     /// Defaults to true for models that support it (e.g., Qwen3 rerankers)
