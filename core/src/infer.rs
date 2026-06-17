@@ -445,7 +445,11 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "inference");
+                let err_label = match err {
+                    BackendError::BatchTooLarge(_) => "batch_tokens",
+                    _ => "inference",
+                };
+                let counter = metrics::counter!("te_request_failure", "err" => err_label);
                 counter.increment(1);
                 tracing::error!("{err}");
                 err

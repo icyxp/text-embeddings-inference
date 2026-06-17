@@ -153,6 +153,24 @@ fn queue_blocking_task(
                     };
 
                     if total_tokens > max_batch_tokens {
+                        // If the current batch is empty and this single entry already exceeds
+                        // `max_batch_tokens`, it can never be batched. Reject it instead of
+                        // pushing it back to the front, which would deadlock the queue and
+                        // block every request behind it (head-of-line blocking).
+                        // Note: the failure metric is counted once in `infer.rs`; we do not
+                        // count it here to avoid double counting.
+                        if metadata.is_empty() {
+                            let _ = entry.metadata.response_tx.send(Err(
+                                BackendError::BatchTooLarge(format!(
+                                    "Input is too large to process. Tokens: {entry_tokens}, \
+                                     max batch tokens: {max_batch_tokens}. Reduce the input \
+                                     length or increase `--max-batch-tokens`."
+                                )),
+                            ));
+                            continue;
+                        }
+
+                        // The batch already has entries; keep this one for the next batch.
                         entries.push_front(entry);
                         break;
                     }
@@ -219,4 +237,72 @@ enum QueueCommand {
         response_sender: oneshot::Sender<Option<NextBatch>>,
         span: Span,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infer::InferResult;
+    use tokio::sync::oneshot::Receiver;
+
+    fn entry_with_tokens(
+        n_tokens: usize,
+    ) -> (Entry, Receiver<Result<InferResult, BackendError>>) {
+        let (response_tx, response_rx) = oneshot::channel();
+        let entry = Entry {
+            encoding: ValidEncoding {
+                input_ids: vec![0; n_tokens],
+                token_type_ids: vec![0; n_tokens],
+                position_ids: (0..n_tokens as u32).collect(),
+            },
+            metadata: Metadata {
+                response_tx,
+                tokenization: Duration::default(),
+                queue_time: Instant::now(),
+                prompt_tokens: n_tokens,
+                pooling: false,
+            },
+        };
+        (entry, response_rx)
+    }
+
+    // Regression test for the head-of-line blocking deadlock: an entry that alone exceeds
+    // `max_batch_tokens` must be rejected (without being pushed back to the front), and the
+    // normal entry queued behind it must still be batched.
+    #[test]
+    fn oversized_head_entry_is_rejected_and_following_entry_is_batched() {
+        let max_batch_tokens = 16384;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let queue = Queue::new(false, max_batch_tokens, None, 512);
+
+            // Head entry is too large to ever fit in a batch.
+            let (oversized, mut oversized_rx) = entry_with_tokens(max_batch_tokens + 1);
+            // Following entry is a normal, batchable request.
+            let normal_tokens = 128;
+            let (normal, _normal_rx) = entry_with_tokens(normal_tokens);
+
+            queue.append(oversized);
+            queue.append(normal);
+
+            let next_batch = queue.next_batch().await;
+
+            // The oversized entry must have received an explicit error, not hung.
+            match oversized_rx.try_recv() {
+                Ok(Err(BackendError::BatchTooLarge(_))) => {}
+                other => panic!("expected BatchTooLarge error for oversized entry, got {other:?}"),
+            }
+
+            // The normal entry behind it must still be batched (no head-of-line blocking).
+            let (metadata, batch) =
+                next_batch.expect("expected a batch containing the normal entry");
+            assert_eq!(metadata.len(), 1);
+            assert_eq!(metadata[0].prompt_tokens, normal_tokens);
+            assert_eq!(batch.input_ids.len(), normal_tokens);
+        });
+    }
 }

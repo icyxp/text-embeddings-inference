@@ -26,7 +26,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{DType, Pool};
+use text_embeddings_backend::{BackendError, DType, Pool};
 use text_embeddings_core::download::{download_artifacts, ST_CONFIG_NAMES};
 use text_embeddings_core::infer::Infer;
 use text_embeddings_core::queue::Queue;
@@ -554,6 +554,9 @@ impl From<TextEmbeddingsError> for ErrorResponse {
             TextEmbeddingsError::Tokenizer(_) => ErrorType::Tokenizer,
             TextEmbeddingsError::Validation(_) => ErrorType::Validation,
             TextEmbeddingsError::Overloaded(_) => ErrorType::Overloaded,
+            // An input exceeding `max_batch_tokens` is a client input issue: return 413
+            // (Validation) rather than 424 (Backend).
+            TextEmbeddingsError::Backend(BackendError::BatchTooLarge(_)) => ErrorType::Validation,
             TextEmbeddingsError::Backend(_) => ErrorType::Backend,
         };
         Self {

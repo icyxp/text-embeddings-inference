@@ -92,4 +92,6 @@ pub enum BackendError {
     Unhealthy,
     #[error("Weights not found: {0}")]
     WeightsNotFound(String),
+    #[error("{0}")]
+    BatchTooLarge(String),
 }
